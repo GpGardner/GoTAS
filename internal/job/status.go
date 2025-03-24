@@ -1,4 +1,4 @@
-package main
+package job
 
 // Status represents the state of a job in the scheduler.
 type Status string
@@ -46,7 +46,7 @@ const (
 	StatusTimeout Status = "timeout"
 
 	// === Invalid or Unclear States ===
-	
+
 	// StatusUnknown means the job's state is unclear due to an unexpected condition.
 	// Use this when a job's status cannot be determined, possibly due to system failure.
 	StatusUnknown Status = "unknown"

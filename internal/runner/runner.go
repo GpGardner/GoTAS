@@ -1,9 +1,11 @@
-package main
+package runner
 
 import (
 	"context"
 	"math"
 	"sync"
+
+	. "GOTAS/internal/job"
 )
 
 type Runnable interface {
@@ -84,7 +86,7 @@ func (r *Runner) runParallel(ctx context.Context) {
 			defer r.wg.Done() // Ensure WaitGroup counter is decremented even if the job panics
 			defer r.incrementCompletedJobs()
 			defer j.Complete()
-			(job).execute(ctx)
+			(job).Run(ctx)
 		}(j)
 	}
 	r.wg.Wait() // Wait for all jobs to complete
@@ -93,7 +95,7 @@ func (r *Runner) runParallel(ctx context.Context) {
 // Issue with ctx, args ??
 func (r *Runner) runSequential(ctx context.Context) {
 	for _, j := range r.jobs {
-		j.execute(ctx)
+		j.Run(ctx)
 		r.incrementCompletedJobs()
 	}
 }

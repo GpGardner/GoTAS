@@ -1,4 +1,4 @@
-package main
+package job
 
 import (
 	"context"
@@ -6,17 +6,19 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	. "GOTAS/internal/utils"
 )
 
 type Job interface {
-	execute(ctx context.Context) // Runs the job with context for cancellation
-	Complete()                   // Marks the job as completed
-	GetStatus() Status           // Returns current job status
-	GetError() error             // Returns job error (if any)
-	GetResult() any              // Returns job result (if applicable)
-	GetDuration() time.Duration  // Returns execution time
-	CreatedAt() time.Time        // Returns the time the job was created
-	CompletedAt() time.Time      // Returns the time the job was completed
+	Run(ctx context.Context)    //
+	Complete()                  // Marks the job as completed
+	GetStatus() Status          // Returns current job status
+	GetError() error            // Returns job error (if any)
+	GetResult() any             // Returns job result (if applicable)
+	GetDuration() time.Duration // Returns execution time
+	CreatedAt() time.Time       // Returns the time the job was created
+	CompletedAt() time.Time     // Returns the time the job was completed
 }
 
 type JobBase struct {
@@ -32,7 +34,7 @@ func NewJobBase() JobBase {
 	return JobBase{
 		id:        uuid.New(),
 		status:    StatusPending,
-		createdAt: ptr(time.Now()),
+		createdAt: Ptr(time.Now()),
 	}
 }
 
@@ -47,6 +49,14 @@ type JobWithResult[T any] struct {
 	JobBase
 	function func(ctx context.Context, args ...any) (T, error)
 	result   T
+}
+
+func (j *JobWithError) Run(ctx context.Context, args ...any) error {
+	return j.execute(ctx)
+}
+
+func (j *JobWithResult[T]) Run(ctx context.Context, args ...any) (T, error) {
+	return j.execute(ctx)
 }
 
 func (j *JobWithError) execute(ctx context.Context, args ...any) error {
@@ -108,7 +118,7 @@ func (j *JobWithResult[T]) execute(ctx context.Context, args ...any) (T, error) 
 
 func completeJob(j *JobBase, status Status) {
 	j.status = status
-	j.completedAt = ptr(time.Now())
+	j.completedAt = Ptr(time.Now())
 	j.duration = time.Since(*j.createdAt)
 }
 
@@ -142,8 +152,4 @@ func (j *JobBase) Duration() time.Duration {
 
 func (j *JobBase) Error() error {
 	return j.error
-}
-
-func ptr[T any](v T) *T {
-	return &v
 }

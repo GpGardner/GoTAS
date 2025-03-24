@@ -1,4 +1,4 @@
-package main
+package runner
 
 // Strategy represents the execution strategy for a job.
 type Strategy string

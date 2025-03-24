@@ -1,9 +1,12 @@
-package main
+package runner
 
 import (
 	"context"
 	"testing"
 	"time"
+
+	. "GOTAS/internal/job"
+	. "GOTAS/internal/utils"
 )
 
 // MockJob is a mock implementation of the Job interface for testing.
@@ -17,7 +20,7 @@ type MockJob struct {
 
 func (j *MockJob) NewMockJob() *MockJob {
 	return &MockJob{
-		createdAt: ptr(time.Now()),
+		createdAt: Ptr(time.Now()),
 	}
 }
 
@@ -49,8 +52,12 @@ func (j *MockJob) CompletedAt() time.Time {
 }
 
 func (j *MockJob) Complete() {
-	j.completedAt = ptr(time.Now())
+	j.completedAt = Ptr(time.Now())
 	j.Executed = true
+}
+
+func (j *MockJob) Run(ctx context.Context) {
+	j.execute(ctx)
 }
 
 func (j *MockJob) execute(ctx context.Context) {
