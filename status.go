@@ -4,6 +4,9 @@ package main
 type Status string
 
 const (
+
+	// === Initial States ===
+
 	// StatusCreated means the job has been registered but hasn't started execution yet.
 	// Use this when a job is added to the queue.
 	StatusCreated Status = "created"
@@ -12,17 +15,27 @@ const (
 	// Use this when a job is blocked by another job in a sequential execution.
 	StatusPending Status = "pending"
 
+	// === Active Execution ===
+
 	// StatusRunning means the job is currently being executed.
 	// Use this when a job is actively processing its task.
 	StatusRunning Status = "running"
+
+	// === Successful Completion ===
 
 	// StatusCompleted means the job finished successfully.
 	// Use this when a job has executed without errors and produced a valid result.
 	StatusCompleted Status = "completed"
 
-	// StatusFailed means the job ran but encountered an error.
-	// Use this when a job fails due to an internal issue (e.g., panic, invalid data).
+	// === Termination Due to Issues ===
+
+	// StatusFailed means the job ran but encountered an system issue.
+	// Use this when a job fails due to an internal issue like a panic.
 	StatusFailed Status = "failed"
+
+	// StatusError means the job failed due to an error in the system or the job itself.
+	// Use this when a job encounters an error that prevents it from running or completing.
+	StatusError Status = "error"
 
 	// StatusCancelled means the job was manually stopped before completion.
 	// Use this when a job is aborted by the user or the system.
@@ -32,6 +45,8 @@ const (
 	// Use this when implementing execution time limits for long-running tasks.
 	StatusTimeout Status = "timeout"
 
+	// === Invalid or Unclear States ===
+	
 	// StatusUnknown means the job's state is unclear due to an unexpected condition.
 	// Use this when a job's status cannot be determined, possibly due to system failure.
 	StatusUnknown Status = "unknown"

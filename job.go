@@ -20,12 +20,12 @@ type Job interface {
 }
 
 type JobBase struct {
-	id          uuid.UUID     // Unique identifier of the job
-	status      Status        // Status of the job
-	createdAt   *time.Time    // Time the job was created
-	completedAt *time.Time    // Time the job was completed
-	duration    time.Duration // Duration of the job execution
-	error       error         // Error message of the job
+	id          uuid.UUID     `json:"id" bson:"id"`                     // Unique identifier of the job
+	status      Status        `json:"status" bson:"status"`             // Status of the job
+	createdAt   *time.Time    `json:"created_at" bson:"created_at"`     // Time the job was created
+	completedAt *time.Time    `json:"completed_at" bson:"completed_at"` // Time the job was completed
+	duration    time.Duration `json:"duration" bson:"duration"`         // Duration of the job execution
+	error       error         `json:"error" bson:"error"`               // Error message of the job (converted to string for serialization)
 }
 
 func NewJobBase() JobBase {
@@ -50,73 +50,66 @@ type JobWithResult[T any] struct {
 }
 
 func (j *JobWithError) execute(ctx context.Context, args ...any) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-		j.status = StatusRunning
-		start := time.Now()
-
-		done := make(chan struct{})
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					j.error = fmt.Errorf("panic: %v", r)
-					j.status = StatusFailed
-				}
-				close(done)
-			}()
-			j.error = j.function(ctx, args)
-		}()
-
-		select {
-		case <-ctx.Done():
-			j.status = StatusCancelled
-			j.error = ctx.Err()
-		case <-done:
-			if j.error != nil {
-				j.status = StatusFailed
-			} else {
-				j.status = StatusCompleted
-			}
-		}
-
-		completeJob(&j.JobBase, start)
-		return nil
+	// Check if the context is already canceled
+	if ctx.Err() != nil {
+		j.error = ctx.Err()
+		completeJob(&j.JobBase, StatusTimeout)
+		return j.error
 	}
+
+	j.status = StatusRunning
+
+	defer func() {
+		if r := recover(); r != nil {
+			j.error = fmt.Errorf("panic: %v", r)
+			completeJob(&j.JobBase, StatusFailed)
+			return
+		}
+		if j.error != nil {
+			completeJob(&j.JobBase, StatusError)
+			return
+		}
+		completeJob(&j.JobBase, StatusCompleted)
+	}()
+
+	// Execute the job function
+	j.error = j.function(ctx, args)
+
+	return j.error
 }
 
 func (j *JobWithResult[T]) execute(ctx context.Context, args ...any) (T, error) {
-	select {
-	case <-ctx.Done():
-		var empty T // Context was canceled, stop execution
-		return empty, ctx.Err()
-	default:
-		j.status = StatusRunning
-		start := time.Now()
-
-		done := make(chan struct{})
-		go func() {
-			j.result, j.error = j.function(ctx, args)
-			close(done)
-		}()
-
-		if j.error != nil {
-			j.status = StatusFailed
-		} else {
-			j.status = StatusCompleted
-		}
-
-		completeJob(&j.JobBase, start)
-
-		return j.result, j.error
+	// Check if the context is already canceled
+	if ctx.Err() != nil {
+		var empty T // Declare a zero value of type T
+		j.error = ctx.Err()
+		completeJob(&j.JobBase, StatusTimeout)
+		return empty, j.error
 	}
+	j.status = StatusRunning
+
+	defer func() {
+		if r := recover(); r != nil {
+			j.error = fmt.Errorf("panic: %v", r)
+			completeJob(&j.JobBase, StatusFailed)
+			return
+		}
+		if j.error != nil {
+			completeJob(&j.JobBase, StatusError)
+			return
+		}
+		completeJob(&j.JobBase, StatusCompleted)
+	}()
+
+	j.result, j.error = j.function(ctx, args)
+
+	return j.result, j.error
 }
 
-func completeJob(j *JobBase, start time.Time) {
-	endTime := time.Now()
-	j.completedAt = &endTime
-	j.duration = time.Since(start)
+func completeJob(j *JobBase, status Status) {
+	j.status = status
+	j.completedAt = ptr(time.Now())
+	j.duration = time.Since(*j.createdAt)
 }
 
 func (j *JobBase) ID() uuid.UUID {
@@ -149,12 +142,6 @@ func (j *JobBase) Duration() time.Duration {
 
 func (j *JobBase) Error() error {
 	return j.error
-}
-
-func (j *JobBase) Complete() {
-	j.completedAt = ptr(time.Now())
-	j.duration = time.Since(*j.createdAt)
-	j.status = StatusCompleted
 }
 
 func ptr[T any](v T) *T {
