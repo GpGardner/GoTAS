@@ -2,25 +2,30 @@ package runner
 
 import (
 	"context"
+	"log"
+	"sync"
 	"testing"
 	"time"
 
 	. "GOTAS/internal/job"
-	. "GOTAS/internal/utils"
 )
 
 // MockJob is a mock implementation of the Job interface for testing.
 type MockJob struct {
-	ID          int
-	Executed    bool
-	createdAt   *time.Time
-	completedAt *time.Time
-	function    func(ctx context.Context, args ...any)
+	ID        int
+	Executed  bool
+	StartChan chan struct{} // Signal when the job starts
+	EndChan   chan struct{} // Signal when the job ends
+	function  func(ctx context.Context, job *MockJob)
 }
 
-func (j *MockJob) NewMockJob() *MockJob {
+func (j *MockJob) NewMockJob(ID int, StartChan chan struct{}, Endchan chan struct{}, f func(ctx context.Context, job *MockJob)) *MockJob {
 	return &MockJob{
-		createdAt: Ptr(time.Now()),
+		ID:        ID,
+		Executed:  false,
+		StartChan: StartChan,
+		EndChan:   Endchan,
+		function:  f,
 	}
 }
 
@@ -41,18 +46,14 @@ func (j *MockJob) GetDuration() time.Duration {
 }
 
 func (j *MockJob) CreatedAt() time.Time {
-	return *j.createdAt
+	return time.Now()
 }
 
 func (j *MockJob) CompletedAt() time.Time {
-	if j.completedAt == nil {
-		return time.Time{}
-	}
-	return *j.completedAt
+	return time.Now()
 }
 
 func (j *MockJob) Complete() {
-	j.completedAt = Ptr(time.Now())
 	j.Executed = true
 }
 
@@ -61,26 +62,32 @@ func (j *MockJob) Run(ctx context.Context) {
 }
 
 func (j *MockJob) execute(ctx context.Context) {
-	j.function(ctx, nil)
-	j.Complete()
+	// Create a select block to handle context cancellation
+
+	select {
+	case <-ctx.Done():
+		// If context is cancelled, return early
+		// log.Printf("Job %d was cancelled", j.ID)
+		return
+	default:
+		// If not cancelled, execute the function
+		j.function(ctx, j)
+		j.Complete()
+	}
 }
 
-func TestRunnerParallel(t *testing.T) {
+func TestRunnerParallelExecution(t *testing.T) {
 	ctx := context.Background()
 	runner := NewRunner(StrategyParallel, nil)
 
-	//Create mock functions
-	functions := []func(ctx context.Context, args ...any){
-		func(ctx context.Context, args ...any) { time.Sleep(10 * time.Millisecond) },
-		func(ctx context.Context, args ...any) { time.Sleep(20 * time.Millisecond) },
-		func(ctx context.Context, args ...any) { time.Sleep(30 * time.Millisecond) },
-	}
+	var wg sync.WaitGroup
+	wg.Add(3) // Expect all 3 jobs to run concurrently
 
-	// Create mock jobs with functions and args
+	// Create mock jobs
 	jobs := []MockJob{
-		{ID: 1, function: func(ctx context.Context, args ...any) { functions[0](ctx, args...) }},
-		{ID: 2, function: func(ctx context.Context, args ...any) { functions[1](ctx, args...) }},
-		{ID: 3, function: func(ctx context.Context, args ...any) { functions[2](ctx, args...) }},
+		{ID: 1, function: func(ctx context.Context, job *MockJob) { wg.Done() }},
+		{ID: 2, function: func(ctx context.Context, job *MockJob) { wg.Done() }},
+		{ID: 3, function: func(ctx context.Context, job *MockJob) { wg.Done() }},
 	}
 
 	// Add jobs to the runner
@@ -89,37 +96,71 @@ func TestRunnerParallel(t *testing.T) {
 	}
 
 	// Run the jobs
-	runner.Run(ctx)
+	go runner.Run(ctx)
 
-	// Verify all jobs were executed
-	for i, job := range jobs {
+	// Wait for all jobs to start
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
 
-		if !job.Executed {
-			t.Errorf("Job %d was not executed in parallel mode", i+1)
+	select {
+	case <-done:
+		// All jobs ran concurrently
+		for _, j := range jobs {
+			if !j.Executed{
+				t.Errorf("Jobs did not run in parallel")
+			}
 		}
+		
+	case <-time.After(50 * time.Millisecond):
+		t.Errorf("Jobs did not run in parallel")
 	}
 }
 
 func TestRunnerProgress(t *testing.T) {
 	ctx := context.Background()
-	runner := NewRunner(StrategyParallel, nil)
+	runner := NewRunner(StrategySequential, nil)
 
-	// Create 3 functions of different durations that I can pass to the mock jobs
-	functions := []func(ctx context.Context, args ...any){
-		func(ctx context.Context, args ...any) { time.Sleep(10 * time.Millisecond) },
-		func(ctx context.Context, args ...any) { time.Sleep(20 * time.Millisecond) },
-		func(ctx context.Context, args ...any) { time.Sleep(30 * time.Millisecond) },
-	}
-
-	// Create mock jobs
+	// Create jobs, each with a CompleteChan to control when they finish
 	jobs := []MockJob{
-		{ID: 1, function: functions[0]}, {ID: 2, function: functions[1]}, {ID: 3, function: functions[2]},
-		{ID: 4, function: functions[0]}, {ID: 5, function: functions[1]}, {ID: 6, function: functions[2]},
-		{ID: 7, function: functions[0]}, {ID: 8, function: functions[1]}, {ID: 9, function: functions[2]},
-		{ID: 10, function: functions[0]}, {ID: 11, function: functions[1]}, {ID: 12, function: functions[2]},
-		{ID: 13, function: functions[2]}, {ID: 14, function: functions[1]}, {ID: 15, function: functions[2]},
-		{ID: 16, function: functions[2]}, {ID: 17, function: functions[1]}, {ID: 18, function: functions[2]},
-		{ID: 19, function: functions[0]}, {ID: 20, function: functions[1]},
+		{
+			ID:        1,
+			StartChan: make(chan struct{}),
+			EndChan:   make(chan struct{}),
+			function: func(ctx context.Context, job *MockJob) {
+				// Wait for the signal to start
+				<-job.StartChan // Receive to unblock the send in test
+				// Simulate some work
+				time.Sleep(1 * time.Millisecond)
+				job.EndChan <- struct{}{}
+			},
+		},
+		{
+			ID:        2,
+			StartChan: make(chan struct{}),
+			EndChan:   make(chan struct{}),
+			function: func(ctx context.Context, job *MockJob) {
+				// Wait for the signal to start
+				<-job.StartChan // Receive to unblock the send in test
+				// Simulate some work
+				time.Sleep(1 * time.Millisecond)
+				job.EndChan <- struct{}{}
+			},
+		},
+		{
+			ID:        3,
+			StartChan: make(chan struct{}),
+			EndChan:   make(chan struct{}),
+			function: func(ctx context.Context, job *MockJob) {
+				// Wait for the signal to start
+				<-job.StartChan // Receive to unblock the send in test
+				// Simulate some work
+				time.Sleep(1 * time.Millisecond)
+				job.EndChan <- struct{}{}
+			},
+		},
 	}
 
 	// Add jobs to the runner
@@ -130,21 +171,28 @@ func TestRunnerProgress(t *testing.T) {
 	// Run the jobs in a separate goroutine
 	go runner.Run(ctx)
 
-	// Wait a bit and check progress
-	time.Sleep(15 * time.Millisecond)
-	progress := runner.CheckProgress()
-	t.Log(progress)
+	// Verify sequential execution and check progress after each job completes
+	for i := 0; i < len(jobs); i++ {
 
-	if progress <= 0.0 || progress >= 100.0 {
-		t.Errorf("Progress is out of bounds: %f", progress)
+		// Signal the current job to complete
+		jobs[i].StartChan <- struct{}{}
+
+		// Wait for the current job to finish and check progress
+		<-jobs[i].EndChan
+
+		progress := runner.CheckProgress()
+
+		t.Logf("Progress after job %d: %f%%", jobs[i].ID, progress)
+
+		if progress <= float64(i*33) || progress > float64((i+1)*33+1) {
+			t.Errorf("Progress is out of bounds after job %d: %f", jobs[i].ID, progress)
+		}
 	}
 
-	// Wait for all jobs to complete
-	time.Sleep(50 * time.Millisecond)
-	progress = runner.CheckProgress()
+	progress := runner.CheckProgress()
 
 	if progress != 100.0 {
-		t.Errorf("Expected progress to be 1.0, got %f", progress)
+		t.Errorf("Expected progress to be 100.0, got %f", progress)
 	}
 }
 
@@ -152,11 +200,44 @@ func TestRunnerSequentialExecution(t *testing.T) {
 	ctx := context.Background()
 	runner := NewRunner(StrategySequential, nil)
 
-	// Create mock jobs
+	// Create mock jobs and give them a function
 	jobs := []MockJob{
-		{ID: 1, function: func(ctx context.Context, args ...any) { time.Sleep(10 * time.Millisecond) }},
-		{ID: 2, function: func(ctx context.Context, args ...any) { time.Sleep(20 * time.Millisecond) }},
-		{ID: 3, function: func(ctx context.Context, args ...any) { time.Sleep(30 * time.Millisecond) }},
+		{
+			ID:        1,
+			StartChan: make(chan struct{}),
+			EndChan:   make(chan struct{}),
+			function: func(ctx context.Context, job *MockJob) {
+				// Wait for the signal to start
+				<-job.StartChan // Receive to unblock the send in test
+				// Simulate some work
+				time.Sleep(1 * time.Millisecond)
+				job.EndChan <- struct{}{}
+			},
+		},
+		{
+			ID:        2,
+			StartChan: make(chan struct{}),
+			EndChan:   make(chan struct{}),
+			function: func(ctx context.Context, job *MockJob) {
+				// Wait for the signal to start
+				<-job.StartChan // Receive to unblock the send in test
+				// Simulate some work
+				time.Sleep(1 * time.Millisecond)
+				job.EndChan <- struct{}{}
+			},
+		},
+		{
+			ID:        3,
+			StartChan: make(chan struct{}),
+			EndChan:   make(chan struct{}),
+			function: func(ctx context.Context, job *MockJob) {
+				// Wait for the signal to start
+				<-job.StartChan // Receive to unblock the send in test
+				// Simulate some work
+				time.Sleep(1 * time.Millisecond)
+				job.EndChan <- struct{}{}
+			},
+		},
 	}
 
 	// Add jobs to the runner
@@ -165,12 +246,22 @@ func TestRunnerSequentialExecution(t *testing.T) {
 	}
 
 	// Run the jobs
-	runner.Run(ctx)
+	go runner.Run(ctx)
 
 	// Verify sequential execution
-	for i := 1; i < len(jobs); i++ {
-		if jobs[i].CreatedAt().Before(jobs[i-1].CompletedAt()) {
-			t.Errorf("Job %d started before Job %d finished", jobs[i].ID, jobs[i-1].ID)
+	for i := 0; i < len(jobs); i++ {
+		log.Printf("Waiting for Job %d to finish...", jobs[i].ID)
+		jobs[i].StartChan <- struct{}{}
+		// Wait for the current job to finish and check progress
+		<-jobs[i].EndChan
+		if i < len(jobs)-1 {
+			log.Printf("Job %d finished, checking if Job %d starts...", jobs[i].ID, jobs[i+1].ID)
+		}
+		//check if jobs[i] completed, i+1 false
+		if i > 1 {
+			if jobs[i-1].Executed == false && jobs[i].Executed {
+				t.Error("Jobs finished out of order")
+			}
 		}
 	}
 }
@@ -181,9 +272,27 @@ func TestRunnerContextCancellation(t *testing.T) {
 
 	// Create mock jobs
 	jobs := []MockJob{
-		{ID: 1, Executed: false, function: func(ctx context.Context, args ...any) { time.Sleep(100 * time.Millisecond) }},
-		{ID: 2, Executed: false, function: func(ctx context.Context, args ...any) { time.Sleep(100 * time.Millisecond) }},
-		{ID: 3, Executed: false, function: func(ctx context.Context, args ...any) { time.Sleep(100 * time.Millisecond) }},
+		{ID: 1, function: func(ctx context.Context, job *MockJob) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+		}},
+		{ID: 2, function: func(ctx context.Context, job *MockJob) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+		}},
+		{ID: 3, function: func(ctx context.Context, job *MockJob) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+		}},
 	}
 
 	// Add jobs to the runner

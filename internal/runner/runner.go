@@ -21,20 +21,19 @@ type Runner struct {
 	wg       *sync.WaitGroup // wg is the wait group for tracking job completion
 	mu       *sync.Mutex     // mu is the mutex for updating job status
 
-	completedJobs *int // completedJobs is the number of jobs completed
-	totalJobs     *int // totalJobs is the total number of jobs in the runner
+	completedJobs int // completedJobs is the number of jobs completed. complete happens regardless error
+	totalJobs     int // totalJobs is the total number of jobs in the runner
 }
 
 // NewRunner creates a new job runner with the given strategy.
 func NewRunner(strategy Strategy, callback func(*Job)) *Runner {
-	ZERO := 0
 	return &Runner{
 		strategy:      strategy,
 		jobs:          make([]Job, 0),
 		wg:            &sync.WaitGroup{},
 		mu:            &sync.Mutex{},
-		completedJobs: &ZERO,
-		totalJobs:     new(int),
+		completedJobs: 0,
+		totalJobs:     0,
 	}
 }
 
@@ -48,15 +47,12 @@ func (r *Runner) CheckProgress() float64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	c := *r.completedJobs
-	t := *r.totalJobs
-
 	// Handle division by zero
-	if t == 0 {
+	if r.totalJobs == 0 {
 		return 0.0
 	}
 
-	return math.Round((float64(c) / float64(t)) * 100)
+	return math.Round((float64(r.completedJobs) / float64(r.totalJobs)) * 100)
 }
 
 // Run executes all jobs in the runner based on the strategy.
@@ -82,12 +78,11 @@ func (r *Runner) Run(ctx context.Context) {
 func (r *Runner) runParallel(ctx context.Context) {
 	for _, j := range r.jobs {
 		r.wg.Add(1) // Increment WaitGroup counter
-		go func(job Job) {
+		go func() {
 			defer r.wg.Done() // Ensure WaitGroup counter is decremented even if the job panics
 			defer r.incrementCompletedJobs()
-			defer j.Complete()
-			(job).Run(ctx)
-		}(j)
+			j.Run(ctx)
+		}()
 	}
 	r.wg.Wait() // Wait for all jobs to complete
 }
@@ -103,11 +98,11 @@ func (r *Runner) runSequential(ctx context.Context) {
 func (r *Runner) incrementCompletedJobs() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	*r.completedJobs++
+	r.completedJobs++
 }
 
 func (r *Runner) incrementTotalJobs() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	*r.totalJobs++
+	r.totalJobs++
 }
