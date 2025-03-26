@@ -2,12 +2,12 @@ package job
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
 
-	. "GOTAS/internal/utils"
+	"GOTAS/internal/utils"
 )
 
 type Job interface {
@@ -21,32 +21,56 @@ type Job interface {
 	CompletedAt() time.Time     // Returns the time the job was completed
 }
 
-type JobBase struct {
-	id          uuid.UUID     `json:"id" bson:"id"`                     // Unique identifier of the job
-	status      Status        `json:"status" bson:"status"`             // Status of the job
-	createdAt   *time.Time    `json:"created_at" bson:"created_at"`     // Time the job was created
-	completedAt *time.Time    `json:"completed_at" bson:"completed_at"` // Time the job was completed
-	duration    time.Duration `json:"duration" bson:"duration"`         // Duration of the job execution
-	error       error         `json:"error" bson:"error"`               // Error message of the job (converted to string for serialization)
+type jobBase struct {
+	id          uuid.UUID     // Unique identifier of the job
+	status      Status        // Status of the job
+	createdAt   *time.Time    // Time the job was created
+	completedAt *time.Time    // Time the job was completed
+	duration    time.Duration // Duration of the job execution
+	error       error         // Error message of the job (converted to string for serialization)
 }
 
-func NewJobBase() JobBase {
-	return JobBase{
+// MarshalJSON implements custom JSON serialization for JobBase
+func (j *jobBase) MarshalJSON() ([]byte, error) {
+	var errMsg string
+	if j.error != nil {
+		errMsg = j.error.Error()
+	}
+
+	return json.Marshal(struct {
+		ID          string        `json:"id" bson:"_id"`
+		Status      Status        `json:"status" bson:"status"`
+		CreatedAt   *time.Time    `json:"created_at,omitempty" bson:"created_at,omitempty"`
+		CompletedAt *time.Time    `json:"completed_at,omitempty" bson:"completed_at,omitempty"`
+		Duration    time.Duration `json:"duration" bson:"duration"`
+		Error       string        `json:"error,omitempty" bson:"error,omitempty"`
+	}{
+		ID:          j.id.String(),
+		Status:      j.status,
+		CreatedAt:   j.createdAt,
+		CompletedAt: j.completedAt,
+		Duration:    j.duration,
+		Error:       errMsg,
+	})
+}
+
+func NewJob() jobBase {
+	return jobBase{
 		id:        uuid.New(),
 		status:    StatusPending,
-		createdAt: Ptr(time.Now()),
+		createdAt: utils.Ptr(time.Now()),
 	}
 }
 
 // Job that returns an error
 type JobWithError struct {
-	JobBase
+	jobBase
 	function func(ctx context.Context, args ...any) error
 }
 
 // Job that returns a result and an error
 type JobWithResult[T any] struct {
-	JobBase
+	jobBase
 	function func(ctx context.Context, args ...any) (T, error)
 	result   T
 }
@@ -60,78 +84,73 @@ func (j *JobWithResult[T]) Run(ctx context.Context, args ...any) (T, error) {
 }
 
 func (j *JobWithError) execute(ctx context.Context, args ...any) error {
-	// Check if the context is already canceled
-	if ctx.Err() != nil {
-		j.error = ctx.Err()
-		completeJob(&j.JobBase, StatusTimeout)
-		return j.error
-	}
+	// Channel for signaling job completion
+	done := make(chan struct{})
 
-	j.status = StatusRunning
-
-	defer func() {
-		if r := recover(); r != nil {
-			j.error = fmt.Errorf("panic: %v", r)
-			completeJob(&j.JobBase, StatusFailed)
-			return
-		}
-		if j.error != nil {
-			completeJob(&j.JobBase, StatusError)
-			return
-		}
-		completeJob(&j.JobBase, StatusCompleted)
+	go func() {
+		defer close(done) // Ensure channel is closed when job exits
+		j.status = StatusRunning
+		j.error = j.function(ctx, args)
 	}()
 
-	// Execute the job function
-	j.error = j.function(ctx, args)
+	select {
+	case <-ctx.Done(): // Context was canceled
+		j.error = ctx.Err()
+		completeJob(&j.jobBase, StatusTimeout)
+	case <-done: // Job finished normally
+		if j.error != nil {
+			completeJob(&j.jobBase, StatusError)
+		} else {
+			completeJob(&j.jobBase, StatusCompleted)
+		}
+	}
 
 	return j.error
 }
 
 func (j *JobWithResult[T]) execute(ctx context.Context, args ...any) (T, error) {
-	// Check if the context is already canceled
-	if ctx.Err() != nil {
-		var empty T // Declare a zero value of type T
-		j.error = ctx.Err()
-		completeJob(&j.JobBase, StatusTimeout)
-		return empty, j.error
-	}
-	j.status = StatusRunning
+	// Channel for signaling job completion
+	done := make(chan struct{})
 
-	defer func() {
-		if r := recover(); r != nil {
-			j.error = fmt.Errorf("panic: %v", r)
-			completeJob(&j.JobBase, StatusFailed)
-			return
-		}
-		if j.error != nil {
-			completeJob(&j.JobBase, StatusError)
-			return
-		}
-		completeJob(&j.JobBase, StatusCompleted)
+	go func() {
+		defer close(done) // Ensure channel is closed when job exits
+		j.status = StatusRunning
+		j.result, j.error = j.function(ctx, args)
 	}()
-
-	j.result, j.error = j.function(ctx, args)
+	var empty T
+	select {
+	case <-ctx.Done(): // Context was canceled
+		j.result = empty
+		j.error = ctx.Err()
+		completeJob(&j.jobBase, StatusTimeout)
+	case <-done: // Job finished normally
+		if j.error != nil {
+			j.result = empty
+			completeJob(&j.jobBase, StatusError)
+		} else {
+			completeJob(&j.jobBase, StatusCompleted)
+		}
+	}
 
 	return j.result, j.error
 }
 
-func completeJob(j *JobBase, status Status) {
+func completeJob(j *jobBase, status Status) {
 	j.status = status
-	j.completedAt = Ptr(time.Now())
+	j.completedAt = utils.Ptr(time.Now())
 	j.duration = time.Since(*j.createdAt)
 }
 
-func (j *JobBase) ID() uuid.UUID {
+func (j *jobBase) ID() uuid.UUID {
 	return j.id
 }
 
-func (j *JobBase) Status() Status {
+func (j *jobBase) Status() Status {
 	return j.status
 }
 
 // CreatedAt returns the time the job was created or nil if not set
-func (j *JobBase) CreatedAt() time.Time {
+func (j *jobBase) CreatedAt() time.Time {
 	if j.createdAt == nil {
 		return time.Time{}
 	}
@@ -139,17 +158,17 @@ func (j *JobBase) CreatedAt() time.Time {
 }
 
 // CompletedAt returns the time the job was completed or nil if not set
-func (j *JobBase) CompletedAt() time.Time {
+func (j *jobBase) CompletedAt() time.Time {
 	if j.completedAt == nil {
 		return time.Time{}
 	}
 	return *j.completedAt
 }
 
-func (j *JobBase) Duration() time.Duration {
+func (j *jobBase) Duration() time.Duration {
 	return j.duration
 }
 
-func (j *JobBase) Error() error {
+func (j *jobBase) Error() error {
 	return j.error
 }
