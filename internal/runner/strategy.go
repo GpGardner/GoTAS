@@ -12,9 +12,9 @@ const (
 	// Use this when jobs are independent and can run in parallel for faster processing.
 	StrategyParallel Strategy = "parallel"
 
-	// StrategyBatch means jobs are executed in batches with a fixed size and order.
-	// Use this when jobs can be grouped together for more efficient processing.
-	StrategyBatch Strategy = "batch"
+	//StrategyFailFast means jobs are executed concurrently, but the first failure stops the execution of all other jobs.
+	// Use this when you want to stop processing as soon as an error occurs.
+	StrategyFailFast Strategy = "fail_fast"
 
 	// StrategyPriority means jobs are executed based on priority level.
 	// Use this when jobs have different levels of importance or urgency.
@@ -41,10 +41,10 @@ func (s Strategy) IsParallel() bool {
 	return s == StrategyParallel
 }
 
-// IsBatch checks if a strategy groups jobs into batches for
-// processing.
-func (s Strategy) IsBatch() bool {
-	return s == StrategyBatch
+// IsFailFast checks if a strategy stops execution on the first
+// failure.
+func (s Strategy) IsFailFast() bool {
+	return s == StrategyFailFast
 }
 
 // IsPriority checks if a strategy prioritizes jobs based on
@@ -67,7 +67,7 @@ func (s Strategy) IsCron() bool {
 // IsValid checks if a strategy is recognized.
 func (s Strategy) IsValid() bool {
 	switch s {
-	case StrategySequential, StrategyParallel, StrategyBatch, StrategyPriority, StrategyRetry, StrategyCron:
+	case StrategySequential, StrategyParallel, StrategyFailFast, StrategyPriority, StrategyRetry, StrategyCron:
 		return true
 	default:
 		return false

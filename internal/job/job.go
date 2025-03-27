@@ -10,15 +10,15 @@ import (
 	"GOTAS/internal/utils"
 )
 
-type Job interface {
-	Run(ctx context.Context)    //
-	Complete()                  // Marks the job as completed
-	GetStatus() Status          // Returns current job status
-	GetError() error            // Returns job error (if any)
-	GetResult() any             // Returns job result (if applicable)
-	GetDuration() time.Duration // Returns execution time
-	CreatedAt() time.Time       // Returns the time the job was created
-	CompletedAt() time.Time     // Returns the time the job was completed
+type Job[T any] interface {
+	Run(ctx context.Context, args ...any) (T, error) // Executes the job and returns result or error
+	Complete(Status)                                 // Marks the job as completed
+	GetStatus() Status                               // Returns current job status
+	GetError() error                                 // Returns job error (if any)
+	GetResult() any                                  // Returns job result (if applicable)
+	GetDuration() time.Duration                      // Returns execution time
+	CreatedAt() time.Time                            // Returns the time the job was created
+	CompletedAt() time.Time                          // Returns the time the job was completed
 }
 
 type jobBase struct {
@@ -54,91 +54,37 @@ func (j *jobBase) MarshalJSON() ([]byte, error) {
 	})
 }
 
-func NewJob() jobBase {
-	return jobBase{
-		id:        uuid.New(),
+func NewJob() (*jobBase, error) {
+	id, err := GenerateID()
+	if err != nil {
+		return nil, err
+	}
+
+	t, err := GenerateCreatedAt()
+	if err != nil {
+		return nil, err
+	}
+
+	return &jobBase{
+		id:        id,
 		status:    StatusPending,
-		createdAt: utils.Ptr(time.Now()),
-	}
-}
-
-// Job that returns an error
-type JobWithError struct {
-	jobBase
-	function func(ctx context.Context, args ...any) error
-}
-
-// Job that returns a result and an error
-type JobWithResult[T any] struct {
-	jobBase
-	function func(ctx context.Context, args ...any) (T, error)
-	result   T
-}
-
-func (j *JobWithError) Run(ctx context.Context, args ...any) error {
-	return j.execute(ctx)
-}
-
-func (j *JobWithResult[T]) Run(ctx context.Context, args ...any) (T, error) {
-	return j.execute(ctx)
-}
-
-func (j *JobWithError) execute(ctx context.Context, args ...any) error {
-	// Channel for signaling job completion
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done) // Ensure channel is closed when job exits
-		j.status = StatusRunning
-		j.error = j.function(ctx, args)
-	}()
-
-	select {
-	case <-ctx.Done(): // Context was canceled
-		j.error = ctx.Err()
-		completeJob(&j.jobBase, StatusTimeout)
-	case <-done: // Job finished normally
-		if j.error != nil {
-			completeJob(&j.jobBase, StatusError)
-		} else {
-			completeJob(&j.jobBase, StatusCompleted)
-		}
-	}
-
-	return j.error
-}
-
-func (j *JobWithResult[T]) execute(ctx context.Context, args ...any) (T, error) {
-	// Channel for signaling job completion
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done) // Ensure channel is closed when job exits
-		j.status = StatusRunning
-		j.result, j.error = j.function(ctx, args)
-	}()
-	var empty T
-	select {
-	case <-ctx.Done(): // Context was canceled
-		j.result = empty
-		j.error = ctx.Err()
-		completeJob(&j.jobBase, StatusTimeout)
-	case <-done: // Job finished normally
-		if j.error != nil {
-			j.result = empty
-			completeJob(&j.jobBase, StatusError)
-		} else {
-			completeJob(&j.jobBase, StatusCompleted)
-		}
-	}
-
-	return j.result, j.error
+		createdAt: t,
+	}, nil
 }
 
 func completeJob(j *jobBase, status Status) {
 	j.status = status
 	j.completedAt = utils.Ptr(time.Now())
 	j.duration = time.Since(*j.createdAt)
+}
+
+func GenerateID() (uuid.UUID, error) {
+	return uuid.NewUUID()
+}
+
+func GenerateCreatedAt() (*time.Time, error) {
+	t := time.Now()
+	return &t, nil
 }
 
 func (j *jobBase) ID() uuid.UUID {
@@ -165,7 +111,7 @@ func (j *jobBase) CompletedAt() time.Time {
 	return *j.completedAt
 }
 
-func (j *jobBase) Duration() time.Duration {
+func (j *jobBase) GetDuration() time.Duration {
 	return j.duration
 }
 

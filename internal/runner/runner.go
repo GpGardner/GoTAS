@@ -8,16 +8,18 @@ import (
 	. "GOTAS/internal/job"
 )
 
-type Runnable interface {
+type Runnable[T any] interface {
 	Run(ctx context.Context)
-	AddJob(j Job)
+	AddJob(j Job[T])
 	CheckProgress() float64
 }
 
-// Runner represents the job runner that executes jobs based on a strategy.
-type Runner struct {
+var _ Runnable[any] = (*runner)(nil) // Ensure runner implements Runnable
+
+// runner represents the job runner that executes jobs based on a strategy.
+type runner struct {
 	strategy Strategy        // strategy is the execution strategy for the runner
-	jobs     []Job           // jobs is the list of jobs to be executed
+	jobs     []Job[any]      // jobs is the list of jobs to be executed
 	wg       *sync.WaitGroup // wg is the wait group for tracking job completion
 	mu       *sync.Mutex     // mu is the mutex for updating job status
 
@@ -26,10 +28,10 @@ type Runner struct {
 }
 
 // NewRunner creates a new job runner with the given strategy.
-func NewRunner(strategy Strategy, callback func(*Job)) *Runner {
-	return &Runner{
+func NewRunner(strategy Strategy, callback func(*Job[any])) *runner {
+	return &runner{
 		strategy:      strategy,
-		jobs:          make([]Job, 0),
+		jobs:          make([]Job[any], 0),
 		wg:            &sync.WaitGroup{},
 		mu:            &sync.Mutex{},
 		completedJobs: 0,
@@ -38,12 +40,12 @@ func NewRunner(strategy Strategy, callback func(*Job)) *Runner {
 }
 
 // AddJob adds a new job to the runner.
-func (r *Runner) AddJob(j Job) {
+func (r *runner) AddJob(j Job[any]) {
 	r.jobs = append(r.jobs, j)
 	r.incrementTotalJobs()
 }
 
-func (r *Runner) CheckProgress() float64 {
+func (r *runner) CheckProgress() float64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -56,12 +58,14 @@ func (r *Runner) CheckProgress() float64 {
 }
 
 // Run executes all jobs in the runner based on the strategy.
-func (r *Runner) Run(ctx context.Context) {
+func (r *runner) Run(ctx context.Context) {
 	switch r.strategy {
 	case StrategySequential:
 		r.runSequential(ctx)
 	case StrategyParallel:
 		r.runParallel(ctx)
+	case StrategyFailFast:
+		r.runFailFast(ctx)
 	// case StrategyBatch:
 	// 	r.runBatch(ctx)
 	// case StrategyPriority:
@@ -75,7 +79,27 @@ func (r *Runner) Run(ctx context.Context) {
 	}
 }
 
-func (r *Runner) runParallel(ctx context.Context) {
+func (r *runner) runFailFast(ctx context.Context) {
+
+	failed := false
+
+	for _, j := range r.jobs {
+		if !failed {
+			j.Run(ctx)
+			r.incrementCompletedJobs()
+			if j.GetStatus() == StatusError {
+				failed = true
+			}
+		}else {
+			//job should have an error status
+			j.Complete(StatusFailed)
+		}
+
+
+	}
+}
+
+func (r *runner) runParallel(ctx context.Context) {
 	for _, j := range r.jobs {
 		r.wg.Add(1) // Increment WaitGroup counter
 		go func() {
@@ -88,20 +112,20 @@ func (r *Runner) runParallel(ctx context.Context) {
 }
 
 // Issue with ctx, args ??
-func (r *Runner) runSequential(ctx context.Context) {
+func (r *runner) runSequential(ctx context.Context) {
 	for _, j := range r.jobs {
 		j.Run(ctx)
 		r.incrementCompletedJobs()
 	}
 }
 
-func (r *Runner) incrementCompletedJobs() {
+func (r *runner) incrementCompletedJobs() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.completedJobs++
 }
 
-func (r *Runner) incrementTotalJobs() {
+func (r *runner) incrementTotalJobs() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.totalJobs++

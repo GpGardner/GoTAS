@@ -53,12 +53,13 @@ func (j *MockJob) CompletedAt() time.Time {
 	return time.Now()
 }
 
-func (j *MockJob) Complete() {
+func (j *MockJob) Complete(status Status) {
 	j.Executed = true
 }
 
-func (j *MockJob) Run(ctx context.Context) {
+func (j *MockJob) Run(ctx context.Context, args ...any) (any, error) {
 	j.execute(ctx)
+	return nil, nil
 }
 
 func (j *MockJob) execute(ctx context.Context) {
@@ -72,7 +73,7 @@ func (j *MockJob) execute(ctx context.Context) {
 	default:
 		// If not cancelled, execute the function
 		j.function(ctx, j)
-		j.Complete()
+		j.Complete(StatusCompleted)
 	}
 }
 
@@ -109,11 +110,11 @@ func TestRunnerParallelExecution(t *testing.T) {
 	case <-done:
 		// All jobs ran concurrently
 		for _, j := range jobs {
-			if !j.Executed{
+			if !j.Executed {
 				t.Errorf("Jobs did not run in parallel")
 			}
 		}
-		
+
 	case <-time.After(50 * time.Millisecond):
 		t.Errorf("Jobs did not run in parallel")
 	}
