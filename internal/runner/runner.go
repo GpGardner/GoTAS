@@ -18,17 +18,18 @@ var _ Runnable[any] = (*runner)(nil) // Ensure runner implements Runnable
 
 // runner represents the job runner that executes jobs based on a strategy.
 type runner struct {
-	strategy Strategy        // strategy is the execution strategy for the runner
+	strategy Strategy                // strategy is the execution strategy for the runner
 	jobs     []Processable[any]      // jobs is the list of jobs to be executed
-	wg       *sync.WaitGroup // wg is the wait group for tracking job completion
-	mu       *sync.Mutex     // mu is the mutex for updating job status
+	wg       *sync.WaitGroup         // wg is the wait group for tracking job completion
+	mu       *sync.Mutex             // mu is the mutex for updating job status
+	callback func(*Processable[any]) // callback function to be invoked after each job execution, can be nil
 
 	completedJobs int // completedJobs is the number of jobs completed. complete happens regardless error
 	totalJobs     int // totalJobs is the total number of jobs in the runner
 }
 
 // NewRunner creates a new job runner with the given strategy.
-func NewRunner(strategy Strategy, callback func(*Processable[any])) *runner {
+func NewRunner(strategy Strategy, callback func(*Processable[any])) *runner { //TODO: work on callback
 	return &runner{
 		strategy:      strategy,
 		jobs:          make([]Processable[any], 0),
@@ -90,11 +91,16 @@ func (r *runner) runFailFast(ctx context.Context) {
 			if j.GetStatus() == StatusError {
 				failed = true
 			}
-		}else {
+			if r.callback != nil {
+				r.callback(&j) // Invoke the callback
+			}
+		} else {
 			//job should have an error status
 			j.Complete(StatusFailed)
+			if r.callback != nil {
+				r.callback(&j) // Invoke the callback
+			}
 		}
-
 
 	}
 }
@@ -106,16 +112,21 @@ func (r *runner) runParallel(ctx context.Context) {
 			defer r.wg.Done() // Ensure WaitGroup counter is decremented even if the job panics
 			defer r.incrementCompletedJobs()
 			j.Run(ctx)
+			if r.callback != nil {
+				r.callback(&j)
+			}
 		}()
 	}
 	r.wg.Wait() // Wait for all jobs to complete
 }
 
-// Issue with ctx, args ??
 func (r *runner) runSequential(ctx context.Context) {
 	for _, j := range r.jobs {
 		j.Run(ctx)
 		r.incrementCompletedJobs()
+		if r.callback != nil {
+			r.callback(&j) // Invoke the callback
+		}
 	}
 }
 

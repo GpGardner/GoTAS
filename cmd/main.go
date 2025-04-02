@@ -91,24 +91,13 @@ func main() {
 		r.AddJob(jobs[i])
 	}
 
-	r2 := runner.NewRunner(
-		runner.StrategySequential,
-		jobCallback)
-	for i := 0; i <= totalJobs; i++ {
-		r2.AddJob(jobs[i]) // Add the same jobs to the sequential runner for comparison
-	}
-
 	defer cancel()
-	// r.Run(ctx)
-	r2.Run(ctx) // Run the sequential runner for comparison
+	r.Run(ctx)
 
-	// for i := 0; i <= totalJobs; i++ {
-
-	// 	fmt.Println(jobs[i].String())
-	// }
+	// TODO: Pull result from the jobs
 
 	// Print the progress of the seq runner
-	fmt.Println("Sequential Runner Progress:")
+	fmt.Println("Runner Progress:")
 	for i := 0; i <= totalJobs; i++ {
 
 		fmt.Println(jobs[i].String())

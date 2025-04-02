@@ -65,6 +65,11 @@ func NewJobBase() (*jobBase, error) {
 func completeJob(j *jobBase, status Status) {
 	j.status = status
 	j.completedAt = utils.Ptr(time.Now())
+	if j.startedAt == nil {
+		// If startedAt is nil, we can't calculate duration
+		j.duration = 0
+		return
+	}
 	j.duration = time.Since(*j.startedAt)
 }
 
