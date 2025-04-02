@@ -10,7 +10,7 @@ import (
 
 type Runnable[T any] interface {
 	Run(ctx context.Context)
-	AddJob(j Job[T])
+	AddJob(j Processable[T])
 	CheckProgress() float64
 }
 
@@ -19,7 +19,7 @@ var _ Runnable[any] = (*runner)(nil) // Ensure runner implements Runnable
 // runner represents the job runner that executes jobs based on a strategy.
 type runner struct {
 	strategy Strategy        // strategy is the execution strategy for the runner
-	jobs     []Job[any]      // jobs is the list of jobs to be executed
+	jobs     []Processable[any]      // jobs is the list of jobs to be executed
 	wg       *sync.WaitGroup // wg is the wait group for tracking job completion
 	mu       *sync.Mutex     // mu is the mutex for updating job status
 
@@ -28,10 +28,10 @@ type runner struct {
 }
 
 // NewRunner creates a new job runner with the given strategy.
-func NewRunner(strategy Strategy, callback func(*Job[any])) *runner {
+func NewRunner(strategy Strategy, callback func(*Processable[any])) *runner {
 	return &runner{
 		strategy:      strategy,
-		jobs:          make([]Job[any], 0),
+		jobs:          make([]Processable[any], 0),
 		wg:            &sync.WaitGroup{},
 		mu:            &sync.Mutex{},
 		completedJobs: 0,
@@ -40,7 +40,7 @@ func NewRunner(strategy Strategy, callback func(*Job[any])) *runner {
 }
 
 // AddJob adds a new job to the runner.
-func (r *runner) AddJob(j Job[any]) {
+func (r *runner) AddJob(j Processable[any]) {
 	r.jobs = append(r.jobs, j)
 	r.incrementTotalJobs()
 }

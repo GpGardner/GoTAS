@@ -10,7 +10,7 @@ import (
 )
 
 func TestNewJobBase(t *testing.T) {
-	jb, err := NewJob()
+	jb, err := NewJobBase()
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
@@ -30,14 +30,14 @@ func TestNewJobBase(t *testing.T) {
 
 func TestJobWithError_Run_Success(t *testing.T) {
 
-	jb, err := NewJob()
+	jb, err := NewJobBase()
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
-	j := &JobWithError{
+	j := &Job[any]{ // Using Job[any] to match the signature of the function
 		jobBase: jb,
-		function: func(ctx context.Context, args ...any) error {
-			return nil
+		function: func(ctx context.Context, args ...any) (any, error) {
+			return nil, nil
 		},
 	}
 
@@ -58,15 +58,15 @@ func TestJobWithError_Run_Success(t *testing.T) {
 }
 
 func TestJobWithError_Run_Error(t *testing.T) {
-	jb, err := NewJob()
+	jb, err := NewJobBase()
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
 	expectedErr := ErrJobFailure
-	j := &JobWithError{
+	j := &Job[any]{
 		jobBase: jb,
-		function: func(ctx context.Context, args ...any) error {
-			return expectedErr
+		function: func(ctx context.Context, args ...any) (any, error) {
+			return nil, expectedErr
 		},
 	}
 
@@ -83,15 +83,15 @@ func TestJobWithError_Run_Error(t *testing.T) {
 }
 
 func TestJobWithError_Run_Timeout(t *testing.T) {
-	jb, err := NewJob()
+	jb, err := NewJobBase()
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
-	j := &JobWithError{
+	j := &Job[any]{
 		jobBase: jb,
-		function: func(ctx context.Context, args ...any) error {
+		function: func(ctx context.Context, args ...any) (any, error) {
 			time.Sleep(2 * time.Second)
-			return nil
+			return nil, nil
 		},
 	}
 
@@ -110,13 +110,13 @@ func TestJobWithError_Run_Timeout(t *testing.T) {
 }
 
 func TestJobWithResult_Run_Success(t *testing.T) {
-	jb, err := NewJob()
+	jb, err := NewJobBase()
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
 
 	expectedResult := "success"
-	j := &JobWithResult[string]{
+	j := &Job[string]{
 		jobBase: jb,
 		function: func(ctx context.Context, args ...any) (string, error) {
 			return expectedResult, nil
@@ -140,13 +140,13 @@ func TestJobWithResult_Run_Success(t *testing.T) {
 }
 
 func TestJobWithResult_Run_Error(t *testing.T) {
-	jb, err := NewJob()
+	jb, err := NewJobBase()
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
 
 	expectedErr := errors.New("job failed")
-	j := &JobWithResult[string]{
+	j := &Job[string]{
 		jobBase: jb,
 		function: func(ctx context.Context, args ...any) (string, error) {
 			return "", expectedErr
@@ -170,12 +170,12 @@ func TestJobWithResult_Run_Error(t *testing.T) {
 }
 
 func TestJobWithResult_Run_Timeout(t *testing.T) {
-	jb, err := NewJob()
+	jb, err := NewJobBase()
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
 
-	j := &JobWithResult[string]{
+	j := &Job[string]{
 		jobBase: jb,
 		function: func(ctx context.Context, args ...any) (string, error) {
 			time.Sleep(2 * time.Second)

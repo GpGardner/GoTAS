@@ -11,16 +11,16 @@ import (
 )
 
 // MockJob is a mock implementation of the Job interface for testing.
-type MockJob struct {
+type MockJob[T any] struct {
 	ID        int
 	Executed  bool
-	StartChan chan struct{} // Signal when the job starts
-	EndChan   chan struct{} // Signal when the job ends
-	function  func(ctx context.Context, job *MockJob)
+	StartChan chan struct{}                              // Signal when the job starts
+	EndChan   chan struct{}                              // Signal when the job ends
+	function  func(ctx context.Context, job *MockJob[T]) // The function to execute for the job
 }
 
-func (j *MockJob) NewMockJob(ID int, StartChan chan struct{}, Endchan chan struct{}, f func(ctx context.Context, job *MockJob)) *MockJob {
-	return &MockJob{
+func NewMockJob(ID int, StartChan chan struct{}, Endchan chan struct{}, f func(ctx context.Context, job *MockJob[any])) *MockJob[any] {
+	return &MockJob[any]{
 		ID:        ID,
 		Executed:  false,
 		StartChan: StartChan,
@@ -29,40 +29,44 @@ func (j *MockJob) NewMockJob(ID int, StartChan chan struct{}, Endchan chan struc
 	}
 }
 
-func (j *MockJob) GetStatus() Status {
-	return StatusCompleted
+// Ensure MockJob implements the Processable interface
+var _ Processable[any] = (*MockJob[any])(nil)
+
+func (j *MockJob[T]) Run(ctx context.Context, args ...any) (T, error) {
+	j.execute(ctx)
+	var zero T
+	return zero, nil
 }
 
-func (j *MockJob) GetError() error {
-	return nil
-}
-
-func (j *MockJob) GetResult() any {
-	return nil
-}
-
-func (j *MockJob) GetDuration() time.Duration {
-	return 10 * time.Millisecond
-}
-
-func (j *MockJob) CreatedAt() time.Time {
-	return time.Now()
-}
-
-func (j *MockJob) CompletedAt() time.Time {
-	return time.Now()
-}
-
-func (j *MockJob) Complete(status Status) {
+func (j *MockJob[T]) Complete(status Status) {
 	j.Executed = true
 }
 
-func (j *MockJob) Run(ctx context.Context, args ...any) (any, error) {
-	j.execute(ctx)
-	return nil, nil
+func (j *MockJob[T]) GetStatus() Status {
+	return StatusCompleted
 }
 
-func (j *MockJob) execute(ctx context.Context) {
+func (j *MockJob[T]) GetError() error {
+	return nil
+}
+
+func (j *MockJob[T]) GetResult() any {
+	return nil
+}
+
+func (j *MockJob[T]) GetDuration() time.Duration {
+	return 10 * time.Millisecond
+}
+
+func (j *MockJob[T]) CreatedAt() time.Time {
+	return time.Now()
+}
+
+func (j *MockJob[T]) CompletedAt() time.Time {
+	return time.Now()
+}
+
+func (j *MockJob[T]) execute(ctx context.Context) {
 	// Create a select block to handle context cancellation
 
 	select {
@@ -85,15 +89,30 @@ func TestRunnerParallelExecution(t *testing.T) {
 	wg.Add(3) // Expect all 3 jobs to run concurrently
 
 	// Create mock jobs
-	jobs := []MockJob{
-		{ID: 1, function: func(ctx context.Context, job *MockJob) { wg.Done() }},
-		{ID: 2, function: func(ctx context.Context, job *MockJob) { wg.Done() }},
-		{ID: 3, function: func(ctx context.Context, job *MockJob) { wg.Done() }},
+	jobs := []*MockJob[any]{
+		NewMockJob(1, make(chan struct{}), make(chan struct{}), func(ctx context.Context, job *MockJob[any]) {
+			defer wg.Done() // Signal that this job is done
+			// Simulate some work
+			time.Sleep(10 * time.Millisecond)
+			log.Printf("Job 1 executed")
+		}),
+		NewMockJob(2, make(chan struct{}), make(chan struct{}), func(ctx context.Context, job *MockJob[any]) {
+			defer wg.Done() // Signal that this job is done
+			// Simulate some work
+			time.Sleep(10 * time.Millisecond)
+			log.Printf("Job 2 executed")
+		}),
+		NewMockJob(3, make(chan struct{}), make(chan struct{}), func(ctx context.Context, job *MockJob[any]) {
+			defer wg.Done() // Signal that this job is done
+			// Simulate some work
+			time.Sleep(10 * time.Millisecond)
+			log.Printf("Job 3 executed")
+		}),
 	}
 
 	// Add jobs to the runner
-	for i := range jobs {
-		runner.AddJob(&jobs[i])
+	for _, val := range jobs {
+		runner.AddJob(val)
 	}
 
 	// Run the jobs
@@ -125,12 +144,12 @@ func TestRunnerProgress(t *testing.T) {
 	runner := NewRunner(StrategySequential, nil)
 
 	// Create jobs, each with a CompleteChan to control when they finish
-	jobs := []MockJob{
+	jobs := []MockJob[any]{
 		{
 			ID:        1,
 			StartChan: make(chan struct{}),
 			EndChan:   make(chan struct{}),
-			function: func(ctx context.Context, job *MockJob) {
+			function: func(ctx context.Context, job *MockJob[any]) {
 				// Wait for the signal to start
 				<-job.StartChan // Receive to unblock the send in test
 				// Simulate some work
@@ -142,7 +161,7 @@ func TestRunnerProgress(t *testing.T) {
 			ID:        2,
 			StartChan: make(chan struct{}),
 			EndChan:   make(chan struct{}),
-			function: func(ctx context.Context, job *MockJob) {
+			function: func(ctx context.Context, job *MockJob[any]) {
 				// Wait for the signal to start
 				<-job.StartChan // Receive to unblock the send in test
 				// Simulate some work
@@ -154,7 +173,7 @@ func TestRunnerProgress(t *testing.T) {
 			ID:        3,
 			StartChan: make(chan struct{}),
 			EndChan:   make(chan struct{}),
-			function: func(ctx context.Context, job *MockJob) {
+			function: func(ctx context.Context, job *MockJob[any]) {
 				// Wait for the signal to start
 				<-job.StartChan // Receive to unblock the send in test
 				// Simulate some work
@@ -202,12 +221,12 @@ func TestRunnerSequentialExecution(t *testing.T) {
 	runner := NewRunner(StrategySequential, nil)
 
 	// Create mock jobs and give them a function
-	jobs := []MockJob{
+	jobs := []MockJob[any]{
 		{
 			ID:        1,
 			StartChan: make(chan struct{}),
 			EndChan:   make(chan struct{}),
-			function: func(ctx context.Context, job *MockJob) {
+			function: func(ctx context.Context, job *MockJob[any]) {
 				// Wait for the signal to start
 				<-job.StartChan // Receive to unblock the send in test
 				// Simulate some work
@@ -219,7 +238,7 @@ func TestRunnerSequentialExecution(t *testing.T) {
 			ID:        2,
 			StartChan: make(chan struct{}),
 			EndChan:   make(chan struct{}),
-			function: func(ctx context.Context, job *MockJob) {
+			function: func(ctx context.Context, job *MockJob[any]) {
 				// Wait for the signal to start
 				<-job.StartChan // Receive to unblock the send in test
 				// Simulate some work
@@ -231,7 +250,7 @@ func TestRunnerSequentialExecution(t *testing.T) {
 			ID:        3,
 			StartChan: make(chan struct{}),
 			EndChan:   make(chan struct{}),
-			function: func(ctx context.Context, job *MockJob) {
+			function: func(ctx context.Context, job *MockJob[any]) {
 				// Wait for the signal to start
 				<-job.StartChan // Receive to unblock the send in test
 				// Simulate some work
@@ -272,22 +291,22 @@ func TestRunnerContextCancellation(t *testing.T) {
 	runner := NewRunner(StrategyParallel, nil)
 
 	// Create mock jobs
-	jobs := []MockJob{
-		{ID: 1, function: func(ctx context.Context, job *MockJob) {
+	jobs := []MockJob[any]{
+		{ID: 1, function: func(ctx context.Context, job *MockJob[any]) {
 			select {
 			case <-ctx.Done():
 				return
 			case <-time.After(100 * time.Millisecond):
 			}
 		}},
-		{ID: 2, function: func(ctx context.Context, job *MockJob) {
+		{ID: 2, function: func(ctx context.Context, job *MockJob[any]) {
 			select {
 			case <-ctx.Done():
 				return
 			case <-time.After(100 * time.Millisecond):
 			}
 		}},
-		{ID: 3, function: func(ctx context.Context, job *MockJob) {
+		{ID: 3, function: func(ctx context.Context, job *MockJob[any]) {
 			select {
 			case <-ctx.Done():
 				return

@@ -29,7 +29,7 @@ func work(ctx context.Context, id int) Result {
 }
 
 // Callback function example
-func jobCallback(job *job.Job[any]) {
+func jobCallback(job *job.Processable[any]) {
 	// Log the job completion
 	j := *job
 	j.GetDuration()
@@ -49,6 +49,7 @@ func jobCallback(job *job.Job[any]) {
 func main() {
 	rand.Seed(time.Now().UnixNano())
 	ctx, cancel := context.WithCancel(context.Background())
+	totalJobs := 10 // Total number of jobs to create
 
 	f, err := os.Create("cpu.prof")
 	if err != nil {
@@ -58,37 +59,62 @@ func main() {
 	pprof.StartCPUProfile(f)
 	defer pprof.StopCPUProfile()
 
-	var jobs []*job.JobWithError
+	var jobs []*job.Job[Result]
+	// Define empty type for the sake of example
+	empty := Result{} // Empty type to satisfy the job's generic type
 
-	for i := 0; i <= 1000; i++ {
-		f := func(ctx context.Context, args ...any) error {
+	for i := 0; i <= totalJobs; i++ {
+		f := func(ctx context.Context, args ...any) (Result, error) {
 			result := work(ctx, i)
 			if !result.Success {
-				return fmt.Errorf("job %d failed", i)
+				return empty, fmt.Errorf("job %d failed", i)
 			}
-			return nil
+			return result, nil
 		}
-		job, err := job.NewJobWithError(f)
+
+		if i == 6 { // Simulate a failure for job 653 to test error handling
+			f = func(ctx context.Context, args ...any) (Result, error) {
+				// Simulate a failure for job 653
+				return empty, fmt.Errorf("simulated failure for job 653")
+			}
+		}
+
+		job, err := job.NewJob(f)
 		if err != nil {
 			panic("Time to party")
 		}
 		jobs = append(jobs, job)
 	}
 
-	runner := runner.NewRunner(runner.StrategyParallel, jobCallback)
-	for i := 0; i <= 1000; i++ {
-		runner.AddJob(jobs[i])
+	r := runner.NewRunner(runner.StrategyParallel, jobCallback)
+	for i := 0; i <= totalJobs; i++ {
+		r.AddJob(jobs[i])
 	}
-	defer cancel()
-	runner.Run(ctx)
-	
 
-	for i := 0; i <= 1000; i++ {
+	r2 := runner.NewRunner(
+		runner.StrategySequential,
+		jobCallback)
+	for i := 0; i <= totalJobs; i++ {
+		r2.AddJob(jobs[i]) // Add the same jobs to the sequential runner for comparison
+	}
+
+	defer cancel()
+	// r.Run(ctx)
+	r2.Run(ctx) // Run the sequential runner for comparison
+
+	// for i := 0; i <= totalJobs; i++ {
+
+	// 	fmt.Println(jobs[i].String())
+	// }
+
+	// Print the progress of the seq runner
+	fmt.Println("Sequential Runner Progress:")
+	for i := 0; i <= totalJobs; i++ {
 
 		fmt.Println(jobs[i].String())
 	}
 
-	fmt.Println(runner.CheckProgress())
+	fmt.Println(r.CheckProgress())
 
 	f, err = os.Create("mem.prof")
 	if err != nil {
