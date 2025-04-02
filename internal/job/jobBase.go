@@ -45,12 +45,12 @@ func (j *jobBase) MarshalJSON() ([]byte, error) {
 }
 
 func NewJobBase() (*jobBase, error) {
-	id, err := GenerateID()
+	id, err := generateID()
 	if err != nil {
 		return nil, err
 	}
 
-	t, err := GenerateCreatedAt()
+	t, err := generateCreatedAt()
 	if err != nil {
 		return nil, err
 	}
@@ -68,17 +68,17 @@ func completeJob(j *jobBase, status Status) {
 	j.duration = time.Since(*j.startedAt)
 }
 
-func GenerateID() (uuid.UUID, error) {
+func generateID() (uuid.UUID, error) {
 	return uuid.NewUUID()
 }
 
-func GenerateCreatedAt() (*time.Time, error) {
+func generateCreatedAt() (*time.Time, error) {
 	t := time.Now()
 	return &t, nil
 }
 
-// Start marks the job as started and sets the started time
-func (j *jobBase) Start() {
+// start marks the job as started and sets the started time
+func (j *jobBase) start() {
 	// Mark the job as started
 	now := time.Now()
 	j.status = StatusRunning

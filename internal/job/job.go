@@ -81,13 +81,21 @@ func (j *Job[T]) GetDuration() time.Duration {
 }
 
 // CreatedAt returns the time the job was created
+// default time if nil
 func (j *Job[T]) CreatedAt() time.Time {
-	return *j.createdAt
+	return j.jobBase.CreatedAt()
+}
+
+// StartedAt returns the time the job was started
+// default time if nil
+func (j *Job[T]) StartedAt() time.Time {
+	return j.jobBase.StartedAt()
 }
 
 // CompletedAt returns the time the job was completed
+// default time if nil
 func (j *Job[T]) CompletedAt() time.Time {
-	return *j.completedAt
+	return j.jobBase.CompletedAt()
 }
 
 func (j *Job[T]) execute(ctx context.Context, args ...any) (any, error) {
@@ -96,7 +104,7 @@ func (j *Job[T]) execute(ctx context.Context, args ...any) (any, error) {
 
 	go func() {
 		defer close(done) // Ensure channel is closed when job exits
-		j.jobBase.Start() // Mark the job as started
+		j.jobBase.start() // Mark the job as started
 		j.result, j.error = j.function(ctx, args)
 	}()
 	var empty T
@@ -124,7 +132,7 @@ func (j *Job[T]) execute(ctx context.Context, args ...any) (any, error) {
 func (j *Job[T]) String() string {
 	return fmt.Sprintf(
 		"Job[ID=%d, Status=%s, CreatedAt=%s, Start=%s, CompletedAt=%s, Error=%v, Duration=%s]",
-		j.jobBase.id,
+		j.jobBase.ID(),
 		j.GetStatus(),
 		j.CreatedAt().Format(time.RFC3339),
 		j.StartedAt().Format(time.RFC3339),
