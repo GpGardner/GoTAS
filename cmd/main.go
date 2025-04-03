@@ -17,15 +17,60 @@ import (
 )
 
 type Result struct {
-	JobID    int
-	Duration time.Duration
-	Success  bool
+	JobID   int
+	Success bool
+}
+
+func (r Result) String() string {
+	return fmt.Sprintf("JobID: %d, Success: %t", r.JobID, r.Success)
 }
 
 func work(ctx context.Context, id int) Result {
 	duration := time.Second * time.Duration(rand.Intn(2)+1)
 	time.Sleep(duration)
-	return Result{JobID: id, Duration: duration, Success: true}
+	return Result{JobID: id, Success: true}
+}
+
+// Inner runner job function
+func innerRunnerJob(ctx context.Context, outerJobID int, innerJobID int) (Result, error) {
+	result := work(ctx, innerJobID)
+	if !result.Success {
+		return Result{JobID: innerJobID, Success: false}, fmt.Errorf("inner job %d failed", innerJobID)
+	}
+	return result, nil
+}
+
+// Outer runner job function
+func outerRunnerJob(ctx context.Context, outerJobID int) (Result, error) {
+	// Create an inner runner
+	innerRunner := runner.NewRunner(runner.StrategyPriority, nil)
+
+	// Add 10 jobs to the inner runner
+	var innerJobs []*job.Job[Result]
+	for j := 0; j < 10; j++ {
+		innerJobFunc := func(ctx context.Context, args ...any) (Result, error) {
+			return innerRunnerJob(ctx, outerJobID, j)
+		}
+
+		innerJob, err := job.NewJob(innerJobFunc)
+		if err != nil {
+			return Result{JobID: outerJobID, Success: false}, fmt.Errorf("failed to create inner job: %v", err)
+		}
+		innerJobs = append(innerJobs, innerJob)
+		innerRunner.AddJob(innerJob)
+	}
+
+	// Run the inner runner
+	innerRunner.Run(ctx)
+
+	// Collect results from the inner runner
+	fmt.Printf("Results for Outer Job %d:\n", outerJobID)
+	for _, innerJob := range innerJobs {
+		fmt.Println(innerJob.String())
+	}
+
+	// Return a successful result for the outer job
+	return Result{JobID: outerJobID, Success: true}, nil
 }
 
 // Callback function example
@@ -49,8 +94,9 @@ func jobCallback(job *job.Processable[any]) {
 func main() {
 	rand.Seed(time.Now().UnixNano())
 	ctx, cancel := context.WithCancel(context.Background())
-	totalJobs := 10 // Total number of jobs to create
+	defer cancel()
 
+	// Start CPU profiling
 	f, err := os.Create("cpu.prof")
 	if err != nil {
 		fmt.Println("could not create CPU profile:", err)
@@ -59,52 +105,38 @@ func main() {
 	pprof.StartCPUProfile(f)
 	defer pprof.StopCPUProfile()
 
-	var jobs []*job.Job[Result]
-	// Define empty type for the sake of example
-	empty := Result{} // Empty type to satisfy the job's generic type
+	// Create the outer runner
+	outerRunner := runner.NewRunner(runner.StrategyParallel, nil)
 
-	for i := 0; i <= totalJobs; i++ {
-		f := func(ctx context.Context, args ...any) (Result, error) {
-			result := work(ctx, i)
-			if !result.Success {
-				return empty, fmt.Errorf("job %d failed", i)
-			}
-			return result, nil
+	// Add 3 jobs to the outer runner
+	var outerJobs []*job.Job[Result]
+	for i := 0; i < 3; i++ {
+		outerJobFunc := func(ctx context.Context, args ...any) (Result, error) {
+			return outerRunnerJob(ctx, i)
 		}
 
-		if i == 6 { // Simulate a failure for job 653 to test error handling
-			f = func(ctx context.Context, args ...any) (Result, error) {
-				// Simulate a failure for job 653
-				return empty, fmt.Errorf("simulated failure for job 653")
-			}
-		}
-
-		job, err := job.NewJob(f)
+		outerJob, err := job.NewJob(outerJobFunc)
 		if err != nil {
-			panic("Time to party")
+			log.Fatalf("Failed to create outer job: %v", err)
 		}
-		jobs = append(jobs, job)
+		outerJobs = append(outerJobs, outerJob)
+		outerRunner.AddJob(outerJob)
 	}
 
-	r := runner.NewRunner(runner.StrategyParallel, jobCallback)
-	for i := 0; i <= totalJobs; i++ {
-		r.AddJob(jobs[i])
+	// Run the outer runner
+	outerRunner.Run(ctx)
+
+	// Collect results from the outer runner
+	fmt.Println("Outer Runner Results:")
+	for _, outerJob := range outerJobs {
+		result := outerJob.GetResult().(Result)
+		fmt.Println(outerJob.String() + " - " + result.String())
 	}
 
-	defer cancel()
-	r.Run(ctx)
+	// Print progress
+	fmt.Println("Final Progress:", outerRunner.CheckProgress(), "%")
 
-	// TODO: Pull result from the jobs
-
-	// Print the progress of the seq runner
-	fmt.Println("Runner Progress:")
-	for i := 0; i <= totalJobs; i++ {
-
-		fmt.Println(jobs[i].String())
-	}
-
-	fmt.Println(r.CheckProgress())
-
+	// Start memory profiling
 	f, err = os.Create("mem.prof")
 	if err != nil {
 		fmt.Println("could not create memory profile:", err)
