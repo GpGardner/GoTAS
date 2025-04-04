@@ -138,7 +138,6 @@ func (j *Job[T]) WithPriority(i uint8) *PriorityJob[T] {
 	if j == nil {
 		return nil
 	}
-
 	job, _ := NewPriorityJob[T](j, i)
 	return job
 }

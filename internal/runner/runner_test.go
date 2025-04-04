@@ -83,7 +83,7 @@ func (j *MockJob[T]) execute(ctx context.Context) {
 
 func TestRunnerParallelExecution(t *testing.T) {
 	ctx := context.Background()
-	runner := NewRunner(StrategyParallel, nil)
+	runner := NewStaticRunner(StrategyParallel, nil)
 
 	var wg sync.WaitGroup
 	wg.Add(3) // Expect all 3 jobs to run concurrently
@@ -141,7 +141,7 @@ func TestRunnerParallelExecution(t *testing.T) {
 
 func TestRunnerProgress(t *testing.T) {
 	ctx := context.Background()
-	runner := NewRunner(StrategySequential, nil)
+	runner := NewStaticRunner(StrategySequential, nil)
 
 	// Create jobs, each with a CompleteChan to control when they finish
 	jobs := []MockJob[any]{
@@ -218,7 +218,7 @@ func TestRunnerProgress(t *testing.T) {
 
 func TestRunnerSequentialExecution(t *testing.T) {
 	ctx := context.Background()
-	runner := NewRunner(StrategySequential, nil)
+	runner := NewStaticRunner(StrategySequential, nil)
 
 	// Create mock jobs and give them a function
 	jobs := []MockJob[any]{
@@ -288,7 +288,7 @@ func TestRunnerSequentialExecution(t *testing.T) {
 
 func TestRunnerContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	runner := NewRunner(StrategyParallel, nil)
+	runner := NewStaticRunner(StrategyParallel, nil)
 
 	// Create mock jobs
 	jobs := []MockJob[any]{

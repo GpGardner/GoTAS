@@ -43,7 +43,7 @@ func innerRunnerJob(ctx context.Context, outerJobID int, innerJobID int) (Result
 // Outer runner job function
 func outerRunnerJob(ctx context.Context, outerJobID int) (Result, error) {
 	// Create an inner runner
-	innerRunner := runner.NewRunner(runner.StrategyPriority, nil)
+	innerRunner := runner.NewStaticRunner(runner.StrategyPriority, nil)
 
 	// Add 10 jobs to the inner runner
 	var innerJobs []*job.Job[Result]
@@ -105,8 +105,51 @@ func main() {
 	pprof.StartCPUProfile(f)
 	defer pprof.StopCPUProfile()
 
+	// runDoubleJob(ctx)
+
+	runProrityJob(ctx)
+
+	// Start memory profiling
+	f, err = os.Create("mem.prof")
+	if err != nil {
+		fmt.Println("could not create memory profile:", err)
+		return
+	}
+	pprof.WriteHeapProfile(f)
+	f.Close()
+
+	log.Println("Starting server on localhost:6060...")
+	log.Fatal(http.ListenAndServe("localhost:6060", nil))
+}
+
+func runProrityJob(ctx context.Context) {
+	runnerInstance := runner.NewStaticRunner(runner.StrategyPriority, jobCallback)
+	// Add 5 jobs to the runner
+	for i := 0; i < 5; i++ {
+
+		jobFunc := func(ctx context.Context, args ...any) (any, error) {
+			// Simulate some work
+			result := work(ctx, i)
+			if !result.Success {
+				return nil, fmt.Errorf("job %d failed", i)
+			}
+			return result, nil
+		}
+
+		j, err := job.NewJob(jobFunc)
+		j.WithPriority(uint8(i))
+		if err != nil {
+			log.Fatalf("Failed to create job: %v", err)
+		}
+
+		runnerInstance.AddJob(j)
+		runnerInstance.Run(ctx)
+	}
+}
+
+func runDoubleJob(ctx context.Context) {
 	// Create the outer runner
-	outerRunner := runner.NewRunner(runner.StrategyParallel, nil)
+	outerRunner := runner.NewStaticRunner(runner.StrategyParallel, nil)
 
 	// Add 3 jobs to the outer runner
 	var outerJobs []*job.Job[Result]
@@ -135,16 +178,4 @@ func main() {
 
 	// Print progress
 	fmt.Println("Final Progress:", outerRunner.CheckProgress(), "%")
-
-	// Start memory profiling
-	f, err = os.Create("mem.prof")
-	if err != nil {
-		fmt.Println("could not create memory profile:", err)
-		return
-	}
-	pprof.WriteHeapProfile(f)
-	f.Close()
-
-	log.Println("Starting server on localhost:6060...")
-	log.Fatal(http.ListenAndServe("localhost:6060", nil))
 }

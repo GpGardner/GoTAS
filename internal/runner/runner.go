@@ -18,10 +18,10 @@ type Runnable[T any] interface {
 	CheckProgress() float64
 }
 
-var _ Runnable[any] = (*runner)(nil) // Ensure runner implements Runnable
+var _ Runnable[any] = (*static)(nil) // Ensure runner implements Runnable
 
-// runner represents the job runner that executes jobs based on a strategy.
-type runner struct {
+// static represents the job static that executes jobs based on a strategy.
+type static struct {
 	strategy Strategy                // strategy is the execution strategy for the runner
 	jobs     []Processable[any]      // jobs is the list of jobs to be executed
 	wg       *sync.WaitGroup         // wg is the wait group for tracking job completion
@@ -32,7 +32,7 @@ type runner struct {
 	totalJobs     int // totalJobs is the total number of jobs in the runner
 }
 
-// NewRunner creates a new job runner with the specified execution strategy and an optional callback function.
+// NewStaticRunner creates a new job runner with the specified execution strategy and an optional callback function.
 //
 // Parameters:
 //
@@ -45,11 +45,11 @@ type runner struct {
 //
 // Example:
 //
-//	runner := NewRunner(StrategyParallel, func(job *Processable[any]) {
+//	runner := NewStaticRunner(StrategyParallel, func(job *Processable[any]) {
 //	    fmt.Printf("Job completed with status: %v\n", job.GetStatus())
 //	})
-func NewRunner(strategy Strategy, callback func(*Processable[any])) *runner {
-	return &runner{
+func NewStaticRunner(strategy Strategy, callback func(*Processable[any])) *static {
+	return &static{
 		strategy:      strategy,
 		jobs:          make([]Processable[any], 0),
 		wg:            &sync.WaitGroup{},
@@ -68,7 +68,13 @@ func NewRunner(strategy Strategy, callback func(*Processable[any])) *runner {
 //
 //	job := &Job[Result]{ID: 1}
 //	runner.AddJob(job)
-func (r *runner) AddJob(j Processable[any]) {
+func (r *static) AddJob(j Processable[any]) {
+	if j == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	r.jobs = append(r.jobs, j)
 	r.incrementTotalJobs()
 }
@@ -82,7 +88,7 @@ func (r *runner) AddJob(j Processable[any]) {
 //
 //	progress := runner.CheckProgress()
 //	fmt.Printf("Progress: %.2f%%\n", progress)
-func (r *runner) CheckProgress() float64 {
+func (r *static) CheckProgress() float64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -104,7 +110,7 @@ func (r *runner) CheckProgress() float64 {
 //	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 //	defer cancel()
 //	runner.Run(ctx)
-func (r *runner) Run(ctx context.Context) {
+func (r *static) Run(ctx context.Context) {
 	switch r.strategy {
 	case StrategySequential:
 		r.runSequential(ctx)
@@ -128,7 +134,7 @@ func (r *runner) Run(ctx context.Context) {
 // Notes:
 // - This method blocks until all jobs are completed.
 // - If a callback is provided, it is invoked after each job completes.
-func (r *runner) runSequential(ctx context.Context) {
+func (r *static) runSequential(ctx context.Context) {
 	if len(r.jobs) == 0 {
 		// No jobs to run, return early
 		return
@@ -151,7 +157,7 @@ func (r *runner) runSequential(ctx context.Context) {
 // Notes:
 // - This method uses a WaitGroup to ensure all jobs are completed before returning.
 // - If a callback is provided, it is invoked after each job completes.
-func (r *runner) runParallel(ctx context.Context) {
+func (r *static) runParallel(ctx context.Context) {
 	if len(r.jobs) == 0 {
 		// No jobs to run, return early
 		return
@@ -179,7 +185,7 @@ func (r *runner) runParallel(ctx context.Context) {
 // Notes:
 // - Jobs after the first failure are marked as failed without being executed.
 // - If a callback is provided, it is invoked after each job completes or is marked as failed.
-func (r *runner) runFailFast(ctx context.Context) {
+func (r *static) runFailFast(ctx context.Context) {
 	if len(r.jobs) == 0 {
 		// No jobs to run, return early
 		return
@@ -216,22 +222,46 @@ func (r *runner) runFailFast(ctx context.Context) {
 // Notes:
 // - Jobs are sorted by priority before execution.
 // - If a callback is provided, it is invoked after each job completes.
-func (r *runner) runPriority(ctx context.Context) {
+func (r *static) runPriority(ctx context.Context) {
 	if len(r.jobs) == 0 {
 		// No jobs to run, return early
 		return
 	}
 
-	//TODO: Think about how to accept priority jobs in the runner
-	//Will developers be able to pass incorrect jobs
-	//How to protect
+	pq := &PriorityQueue[any]{}
+	// Populate the priority queue with jobs
+	for _, j := range r.jobs {
+		if j == nil {
+			continue // Skip nil jobs
+		}
+		// Ensure the job implements the Priority interface
+		if priorityJob, ok := j.(*PriorityJob[any]); ok {
+			// Add to priority queue
+			pq.Push(priorityJob)
+		} else {
+			// Fallback to adding as a normal job if it doesn't implement Priority
+			pj, _ := NewPriorityJob[any](j, 0)
+			pq.Push(pj)
+		}
+		r.incrementTotalJobs()
+	}
+
+	// Execute jobs based on priority
+	for pq.Len() > 0 {
+		// Pop the highest priority job
+		job := pq.Pop()
+
+		job.(*PriorityJob[any]).Run(ctx) // Execute the job
+		r.incrementCompletedJobs()
+	}
+
 }
 
 // incrementCompletedJobs increments the count of completed jobs in a thread-safe manner.
 //
 // Notes:
 // - This method uses a mutex to ensure safe access to the completedJobs counter.
-func (r *runner) incrementCompletedJobs() {
+func (r *static) incrementCompletedJobs() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.completedJobs++
@@ -241,7 +271,7 @@ func (r *runner) incrementCompletedJobs() {
 //
 // Notes:
 // - This method uses a mutex to ensure safe access to the totalJobs counter.
-func (r *runner) incrementTotalJobs() {
+func (r *static) incrementTotalJobs() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.totalJobs++
