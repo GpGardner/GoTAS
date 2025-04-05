@@ -19,7 +19,7 @@ type MockJob[T any] struct {
 	function  func(ctx context.Context, job *MockJob[T]) // The function to execute for the job
 }
 
-func NewMockJob(ID int, StartChan chan struct{}, Endchan chan struct{}, f func(ctx context.Context, job *MockJob[any])) *MockJob[any] {
+func NewMockJob(ID int, StartChan chan struct{}, Endchan chan struct{}, f func(ctx context.Context, job *MockJob[any])) Processable[any] {
 	return &MockJob[any]{
 		ID:        ID,
 		Executed:  false,
@@ -30,7 +30,7 @@ func NewMockJob(ID int, StartChan chan struct{}, Endchan chan struct{}, f func(c
 }
 
 // Ensure MockJob implements the Processable interface
-var _ Processable[any] = (*MockJob[any])(nil)
+// var _ Processable[any] = (*MockJob[any])(nil)
 
 func (j *MockJob[T]) Run(ctx context.Context, args ...any) (T, error) {
 	j.execute(ctx)
@@ -83,7 +83,7 @@ func (j *MockJob[T]) execute(ctx context.Context) {
 
 func TestRunnerParallelExecution(t *testing.T) {
 	ctx := context.Background()
-	runner := NewStaticRunner(StrategyParallel, nil)
+	runner := NewStaticRunner[any](StrategyParallel{}, nil)
 
 	var wg sync.WaitGroup
 	wg.Add(3) // Expect all 3 jobs to run concurrently
@@ -95,19 +95,19 @@ func TestRunnerParallelExecution(t *testing.T) {
 			// Simulate some work
 			time.Sleep(10 * time.Millisecond)
 			log.Printf("Job 1 executed")
-		}),
+		}).(*MockJob[any]), // Ensure type matches Processable[any]
 		NewMockJob(2, make(chan struct{}), make(chan struct{}), func(ctx context.Context, job *MockJob[any]) {
 			defer wg.Done() // Signal that this job is done
 			// Simulate some work
 			time.Sleep(10 * time.Millisecond)
 			log.Printf("Job 2 executed")
-		}),
+		}).(*MockJob[any]),
 		NewMockJob(3, make(chan struct{}), make(chan struct{}), func(ctx context.Context, job *MockJob[any]) {
 			defer wg.Done() // Signal that this job is done
 			// Simulate some work
 			time.Sleep(10 * time.Millisecond)
 			log.Printf("Job 3 executed")
-		}),
+		}).(*MockJob[any]),
 	}
 
 	// Add jobs to the runner
@@ -141,7 +141,7 @@ func TestRunnerParallelExecution(t *testing.T) {
 
 func TestRunnerProgress(t *testing.T) {
 	ctx := context.Background()
-	runner := NewStaticRunner(StrategySequential, nil)
+	runner := NewStaticRunner[any](StrategySequential{}, nil)
 
 	// Create jobs, each with a CompleteChan to control when they finish
 	jobs := []MockJob[any]{
@@ -218,7 +218,7 @@ func TestRunnerProgress(t *testing.T) {
 
 func TestRunnerSequentialExecution(t *testing.T) {
 	ctx := context.Background()
-	runner := NewStaticRunner(StrategySequential, nil)
+	runner := NewStaticRunner[any](StrategySequential{}, nil)
 
 	// Create mock jobs and give them a function
 	jobs := []MockJob[any]{
@@ -288,7 +288,7 @@ func TestRunnerSequentialExecution(t *testing.T) {
 
 func TestRunnerContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	runner := NewStaticRunner(StrategyParallel, nil)
+	runner := NewStaticRunner[any](StrategyParallel{}, nil)
 
 	// Create mock jobs
 	jobs := []MockJob[any]{

@@ -43,7 +43,7 @@ func innerRunnerJob(ctx context.Context, outerJobID int, innerJobID int) (Result
 // Outer runner job function
 func outerRunnerJob(ctx context.Context, outerJobID int) (Result, error) {
 	// Create an inner runner
-	innerRunner := runner.NewStaticRunner(runner.StrategyPriority, nil)
+	innerRunner := runner.NewStaticRunner[Result](runner.StrategyParallel{}, nil)
 
 	// Add 10 jobs to the inner runner
 	var innerJobs []*job.Job[Result]
@@ -105,9 +105,9 @@ func main() {
 	pprof.StartCPUProfile(f)
 	defer pprof.StopCPUProfile()
 
-	// runDoubleJob(ctx)
+	runDoubleJob(ctx)
 
-	runProrityJob(ctx)
+	// runProrityJob(ctx)
 
 	// Start memory profiling
 	f, err = os.Create("mem.prof")
@@ -123,7 +123,7 @@ func main() {
 }
 
 func runProrityJob(ctx context.Context) {
-	runnerInstance := runner.NewStaticRunner(runner.StrategyPriority, jobCallback)
+	runnerInstance := runner.NewStaticRunner(runner.StrategyPriority{}, jobCallback)
 	// Add 5 jobs to the runner
 	for i := 0; i < 5; i++ {
 
@@ -149,7 +149,7 @@ func runProrityJob(ctx context.Context) {
 
 func runDoubleJob(ctx context.Context) {
 	// Create the outer runner
-	outerRunner := runner.NewStaticRunner(runner.StrategyParallel, nil)
+	outerRunner := runner.NewStaticRunner[Result](runner.StrategyParallel{}, nil)
 
 	// Add 3 jobs to the outer runner
 	var outerJobs []*job.Job[Result]

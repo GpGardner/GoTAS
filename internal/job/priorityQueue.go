@@ -51,7 +51,8 @@ func (pq PriorityQueue[T]) Swap(i, j int) {
 // Parameters:
 // - x: The job to add to the priority queue. Must be of type PriorityJob[T].
 func (pq *PriorityQueue[T]) Push(x any) {
-    *pq = append(*pq, x.(PriorityJob[T]))
+    job := x.(PriorityJob[T]) 
+    *pq = append(*pq, job)
 }
 
 // Pop removes and returns the job with the highest priority from the priority queue.
