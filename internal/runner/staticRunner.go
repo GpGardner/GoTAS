@@ -96,7 +96,7 @@ func (r *static[T]) CheckProgress() float64 {
 //	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 //	defer cancel()
 //	runner.Run(ctx)
-func (r *static[T]) Run(ctx context.Context) error {
+func (r *static[T]) Run(ctx context.Context) {
 	switch r.strategy.(type) {
 	case StrategySequential:
 		r.runSequential(ctx)
@@ -108,11 +108,7 @@ func (r *static[T]) Run(ctx context.Context) error {
 		r.runPriority(ctx)
 	case StrategyRetry:
 		r.runPriority(ctx)
-	default:
-		return ErrInvalidRunnerStrategy
 	}
-	// Return nil to indicate successful execution of all jobs
-	return nil
 }
 
 // runSequential executes all jobs in the order they were added to the runner.

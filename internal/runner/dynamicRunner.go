@@ -9,23 +9,50 @@ import (
 
 var _ Runnable[any] = (*dynamic[any])(nil) // Ensure runner implements Runnable
 
-// static represents the job static that executes jobs based on a strategy.
+const DefaultMaxWorkers = 8
+const MaxAllowedWorkers = 1000
+
+// dynamic represents a runner that executes jobs based on a strategy and can continuously run
 type dynamic[T any] struct {
-	strategy DynamicStrategy       // strategy is the execution strategy for the runner
-	jobs     []Processable[T]      // jobs is the list of jobs to be executed
-	wg       *sync.WaitGroup       // wg is the wait group for tracking job completion
-	mu       *sync.Mutex           // mu is the mutex for updating job status
-	callback func(*Processable[T]) // callback function to be invoked after each job execution, can be nil
+	strategy DynamicStrategy // strategy is the execution strategy for the runner
+	workers  int             //total amount of workers to run
+	chanSize int             // chanSize is the size of the buffered channel for jobs default to 100 max 10000
+	closed   bool            // closed indicates whether the runner has been closed or not, used to stop accepting jobs
+
+	jobs     chan Processable[T]  // jobs is the list of jobs to be executed
+	wg       *sync.WaitGroup      // wg is the wait group for tracking job completion
+	mu       *sync.Mutex          // mu is the mutex for updating job status
+	callback func(Processable[T]) // callback function to be invoked after each job execution, can be nil
 
 	completedJobs int // completedJobs is the number of jobs completed. complete happens regardless of error
 	totalJobs     int // totalJobs is the total number of jobs in the runner
 }
 
+func (r *dynamic[T]) closeJobQueue() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.closed {
+		r.closed = true
+		close(r.jobs)
+	}
+
+}
+
 // NewDynamicRunner creates a new job runner with the specified execution strategy and an optional callback function.
-func NewDynamicRunner[T any](strategy DynamicStrategy, callback func(*Processable[T])) *dynamic[T] {
+func NewDynamicRunner[T any](strategy DynamicStrategy, callback func(Processable[T]), workers, chanSize int) *dynamic[T] {
+	//default workers 8
+	workers = clampWorkers(workers, DefaultMaxWorkers, MaxAllowedWorkers)
+
+	// default channel size if not provided
+	chanSize = clampChan(chanSize)
+
 	return &dynamic[T]{
 		strategy:      strategy,
-		jobs:          make([]Processable[T], 0),
+		workers:       workers,  // total amount of workers to run
+		chanSize:      chanSize, // size of the buffered channel for jobs
+		closed:        false,
+		jobs:          make(chan Processable[T], chanSize), // Buffered channel to hold jobs, can be adjusted based on requirements
 		wg:            &sync.WaitGroup{},
 		mu:            &sync.Mutex{},
 		callback:      callback,
@@ -34,20 +61,62 @@ func NewDynamicRunner[T any](strategy DynamicStrategy, callback func(*Processabl
 	}
 }
 
+func clampChan(chanSize int) int {
+	// Ensure the channel size is a positive integer, default to 100 if not provided or invalid
+	if chanSize <= 0 {
+		chanSize = 100 // Default buffered channel size
+	}
+
+	//protect against too large of a channel size, cap it at 10000 to avoid memory issues
+	if chanSize > 10000 {
+		chanSize = 10000 // Cap the channel size to avoid excessive memory usage
+	}
+	return chanSize
+}
+
+func clampWorkers(workers, DefaultMaxWorkers, MaxAllowedWorkers int) int {
+	if workers > MaxAllowedWorkers {
+		return MaxAllowedWorkers // Cap at MaxAllowedWorkers
+	}
+	if workers < DefaultMaxWorkers {
+		return DefaultMaxWorkers // Ensure at least the default
+	}
+	return workers
+}
+
 // AddJob implements Runnable.
 func (r *dynamic[T]) AddJob(j Processable[T]) {
-	panic("unimplemented")
+	r.mu.Lock()
+	if r.closed {
+		// If the runner is closed, do not accept any more jobs
+		return
+	}
+	r.mu.Unlock()
+
+	r.jobs <- j
+	r.incrementTotalJobs()
 }
 
 // CheckProgress implements Runnable.
 func (r *dynamic[T]) CheckProgress() float64 {
-	panic("unimplemented")
+
+	r.mu.Lock()
+	if r.totalJobs <= 0 {
+		return 0.0 // Avoid division by zero
+	}
+	if r.completedJobs < 0 {
+		r.completedJobs = 0 // Ensure completed jobs is not negative
+	}
+	// Calculate progress as a percentage
+	progress := float64(r.completedJobs) / float64(r.totalJobs)
+	r.mu.Unlock()
+	return progress
 }
 
 // Run implements Runnable.
-func (r *dynamic[T]) Run(ctx context.Context) error {
+func (r *dynamic[T]) Run(ctx context.Context) {
 	switch r.strategy.(type) {
-	case StrategySequential:
+	case StrategyFIFO:
 		r.runSequential(ctx)
 	case StrategyParallel:
 		r.runParallel(ctx)
@@ -57,12 +126,40 @@ func (r *dynamic[T]) Run(ctx context.Context) error {
 		r.runPriority(ctx)
 	case StrategyRetry:
 		r.runRetry(ctx)
-	default:
-		return ErrInvalidRunnerStrategy
 	}
-	// Return nil to indicate successful execution of all jobs
-	return nil
 }
+
+func (r *dynamic[T]) runParallel(ctx context.Context) {
+	for i := 0; i < r.workers; i++ {
+		r.wg.Add(1)
+		go func(id int) {
+			defer r.wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return // Respect context cancel
+				case j, ok := <-r.jobs:
+					if !ok {
+						return // Channel closed, stop worker
+					}
+
+					_, err := j.Run(ctx)
+					if err != nil {
+						// Optionally log or handle the error
+						continue
+					}
+
+					r.incrementCompletedJobs()
+
+					if r.callback != nil {
+						r.callback(j)
+					}
+				}
+			}
+		}(i)
+	}
+}
+
 
 func (r *dynamic[T]) runRetry(ctx context.Context) {
 	panic("unimplemented")
@@ -76,10 +173,31 @@ func (r *dynamic[T]) runFailFast(ctx context.Context) {
 	panic("unimplemented")
 }
 
-func (r *dynamic[T]) runParallel(ctx context.Context) {
+func (r *dynamic[T]) runSequential(ctx context.Context) {
 	panic("unimplemented")
 }
 
-func (r *dynamic[T]) runSequential(ctx context.Context) {
-	panic("unimplemented")
+// incrementCompletedJobs increments the count of completed jobs in a thread-safe manner.
+//
+// Notes:
+// - This method uses a mutex to ensure safe access to the completedJobs counter.
+func (r *dynamic[T]) incrementCompletedJobs() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.completedJobs++
+}
+
+// incrementTotalJobs increments the count of total jobs in a thread-safe manner.
+//
+// Notes:
+// - This method uses a mutex to ensure safe access to the totalJobs counter.
+func (r *dynamic[T]) incrementTotalJobs() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.totalJobs++
+}
+
+func (r *dynamic[T]) Shutdown() {
+	r.closeJobQueue() // Close the job queue to stop accepting new jobs
+	r.wg.Wait()       // Wait for all workers to finish processing
 }

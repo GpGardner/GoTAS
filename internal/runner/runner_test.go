@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"testing"
@@ -71,8 +72,7 @@ func (j *MockJob[T]) execute(ctx context.Context) {
 
 	select {
 	case <-ctx.Done():
-		// If context is cancelled, return early
-		// log.Printf("Job %d was cancelled", j.ID)
+		j.Executed = false // Mark as not executed if context is done
 		return
 	default:
 		// If not cancelled, execute the function
@@ -329,5 +329,152 @@ func TestRunnerContextCancellation(t *testing.T) {
 		if job.Executed {
 			t.Errorf("Job %d was executed despite context cancellation", job.ID)
 		}
+	}
+}
+
+func TestDynamicRunner(t *testing.T) {
+	totalJobs := 100
+	failAt := 50
+	totalSuccess := 0
+
+	workers := 4
+	chanSize := 10
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runner := NewDynamicRunner[any](StrategyParallel{}, nil, workers, chanSize)
+	jobs := []*MockJob[any]{}
+
+	startChan := make(chan struct{}, totalJobs) // Channel to signal job start
+	endChan := make(chan struct{}, totalJobs)   // Channel to signal job end
+
+	// Run the runner in a separate goroutine
+	go runner.Run(ctx)
+
+	// Create a WaitGroup to track job execution
+	var wg sync.WaitGroup
+
+	// Add jobs to the runner
+	for i := 0; i < totalJobs; i++ {
+		job := NewMockJob(i, startChan, endChan, func(ctx context.Context, job *MockJob[any]) {
+			defer wg.Done() // Mark job as done when it finishes
+			select {
+			case <-ctx.Done():
+				// Context canceled, job will not execute
+				fmt.Printf("Job %d canceled\n", job.ID)
+				return
+			default:
+				// Simulate job execution
+				<-job.StartChan // Receive to unblock the send in test
+				fmt.Printf("Job %d executed\n", job.ID)
+				job.Executed = true
+			}
+		})
+		jobs = append(jobs, job.(*MockJob[any])) // Ensure type matches Processable[any]
+		wg.Add(1)                                // Increment WaitGroup counter
+		runner.AddJob(job)
+		startChan <- struct{}{} // Signal that the job has started (for testing purposes)
+	}
+
+	// Cancel the context after a short delay
+	time.AfterFunc(50*time.Millisecond, cancel)
+
+	// Wait for all jobs to complete
+	wg.Wait()
+
+	// Check which jobs were executed
+	for _, job := range jobs {
+		if job.Executed {
+			totalSuccess++
+		}
+	}
+
+	fmt.Printf("Total jobs executed: %d/%d\n", totalSuccess, totalJobs)
+
+	// Verify that the number of executed jobs is within an acceptable range
+	if totalSuccess > totalJobs || totalSuccess < failAt {
+		t.Errorf("Unexpected number of jobs executed: %d/%d", totalSuccess, totalJobs)
+	}
+}
+
+func TestDynamicRunnerCtx(t *testing.T) {
+	totalJobs := 2
+	failAt := 1
+	totalSuccess := 0
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runner := NewDynamicRunner[any](StrategyParallel{}, nil, 1, 500)
+	jobs := []*MockJob[any]{}
+
+	// Create a WaitGroup to track job execution
+	var wg sync.WaitGroup
+
+	// Run the runner in a separate goroutine
+	go runner.Run(ctx)
+
+	// Add jobs to the runner
+	for i := 0; i < totalJobs; i++ {
+		startChan := make(chan struct{}, 1) // Channel to signal job start
+		endChan := make(chan struct{}, 1)   // Channel to signal job end
+		job := NewMockJob(i, startChan, endChan, func(ctx context.Context, job *MockJob[any]) {
+			defer wg.Done() // Mark job as done when it finishes
+			select {
+			case <-ctx.Done():
+				// Context canceled, job will not execute
+				fmt.Printf("Job %d canceled\n", job.ID)
+				return
+			default:
+				// Wait for the signal to start
+				fmt.Println("Waiting for job start signal...")
+				<-job.StartChan // Receive to unblock the send in test
+				fmt.Printf("Job %d executing...\n", job.ID)
+				// Simulate some work
+				time.Sleep(1 * time.Millisecond)
+				job.EndChan <- struct{}{}
+				job.Executed = true
+			}
+		})
+		jobs = append(jobs, job.(*MockJob[any])) // Ensure type matches Processable[any]
+
+		// if i == failAt {
+		// 	cancel() // Cancel the context when we reach the failAt threshold
+		// }
+
+		wg.Add(1) // Increment WaitGroup counter
+		go func() {
+			runner.AddJob(job)
+		}()
+
+	}
+
+	// Cancel the context after a short delay
+
+	for i, r := range jobs {
+		if i == failAt {
+			// Cancel the context to simulate a failure at this point
+			fmt.Println("Canceling context at job index:", i)
+			cancel()
+		}
+		r.StartChan <- struct{}{} // Signal that the job has started (for testing purposes)
+	}
+	// Wait for all jobs to complete
+	runner.Shutdown()
+	wg.Wait()
+
+	// Check which jobs were executed
+	for _, job := range jobs {
+		if job.Executed {
+			totalSuccess++
+		}
+	}
+
+	fmt.Printf("Total jobs executed: %d/%d\n", totalSuccess, totalJobs)
+
+	// Verify that the number of executed jobs is within an acceptable range
+	if totalSuccess > failAt {
+		t.Errorf("Unexpected number of jobs executed: %d/%d expected %d", totalSuccess, totalJobs, failAt)
 	}
 }

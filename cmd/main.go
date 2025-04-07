@@ -43,7 +43,7 @@ func innerRunnerJob(ctx context.Context, outerJobID int, innerJobID int) (Result
 // Outer runner job function
 func outerRunnerJob(ctx context.Context, outerJobID int) (Result, error) {
 	// Create an inner runner
-	innerRunner := runner.NewStaticRunner[Result](runner.StrategyParallel{}, nil)
+	innerRunner := runner.NewStaticRunner[Result](runner.StrategySequential{}, nil)
 
 	// Add 10 jobs to the inner runner
 	var innerJobs []*job.Job[Result]

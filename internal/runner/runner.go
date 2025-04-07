@@ -10,7 +10,7 @@ import (
 // The runner is designed to handle job execution efficiently while providing progress tracking and optional callbacks.
 
 type Runnable[T any] interface {
-	Run(ctx context.Context) error
+	Run(ctx context.Context)
 	AddJob(j Processable[T])
 	CheckProgress() float64
 }
