@@ -7,14 +7,14 @@ import (
 )
 
 type Processable[T any] interface {
-	Run(ctx context.Context, args ...any) (any, error) // Executes the job and returns result or error
-	Complete(Status)                                   // Marks the job as completed
-	GetStatus() Status                                 // Returns current job status
-	GetError() error                                   // Returns job error (if any)
-	GetResult() any                                    // Returns job result (if applicable)
-	GetDuration() time.Duration                        // Returns execution time
-	CreatedAt() time.Time                              // Returns the time the job was created
-	CompletedAt() time.Time                            // Returns the time the job was completed
+	Run(ctx context.Context, args ...any) (T, error) // Executes the job and returns result or error
+	Complete(Status)                                 // Marks the job as completed
+	GetStatus() Status                               // Returns current job status
+	GetError() error                                 // Returns job error (if any)
+	GetResult() T                                    // Returns job result (if applicable)
+	GetDuration() time.Duration                      // Returns execution time
+	CreatedAt() time.Time                            // Returns the time the job was created
+	CompletedAt() time.Time                          // Returns the time the job was completed
 }
 
 // make sure Job implements Processable interface
@@ -27,8 +27,35 @@ type Job[T any] struct {
 	result   T
 }
 
-func (j *Job[T]) Run(ctx context.Context, args ...any) (any, error) {
-	return j.execute(ctx, args...)
+func (j *Job[T]) Run(ctx context.Context, args ...any) (T, error) {
+	j.start()
+	//Check that ctx isnt already complete
+	if ctx.Err() != nil {
+		j.error = ctx.Err()
+		j.result = *new(T) // Reset result to zero value
+		j.Complete(StatusTimeout)
+		return j.result, j.error
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		j.result, j.error = j.function(ctx, args...)
+	}()
+
+	select {
+	case <-ctx.Done():
+		j.error = ctx.Err()
+		j.result = *new(T) // Reset result to zero value
+		j.Complete(StatusTimeout)
+		return j.result, j.error
+	case <-done:
+		if j.error != nil {
+			j.Complete(StatusError)
+		} else {
+			j.Complete(StatusCompleted)
+		}
+		return j.result, j.error
+	}
 }
 
 // NewJobWithResult creates a new JobWithResult instance.
@@ -71,7 +98,7 @@ func (j *Job[T]) GetError() error {
 }
 
 // GetResult returns the job result (if applicable)
-func (j *Job[T]) GetResult() any {
+func (j *Job[T]) GetResult() T {
 	return j.result
 }
 
@@ -98,40 +125,13 @@ func (j *Job[T]) CompletedAt() time.Time {
 	return j.jobBase.CompletedAt()
 }
 
-func (j *Job[T]) execute(ctx context.Context, args ...any) (any, error) {
-	// Channel for signaling job completion
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done) // Ensure channel is closed when job exits
-		j.jobBase.start() // Mark the job as started
-		j.result, j.error = j.function(ctx, args)
-	}()
-	var empty T
-	select {
-	case <-ctx.Done(): // Context was canceled
-		j.result = empty
-		j.error = ctx.Err()
-		completeJob(j.jobBase, StatusTimeout)
-	case <-done: // Job finished normally
-		if j.error != nil {
-			j.result = empty
-			completeJob(j.jobBase, StatusError)
-		} else {
-			completeJob(j.jobBase, StatusCompleted)
-		}
-	}
-
-	return j.result, j.error
-}
-
 // String returns a human-readable string representation of the Job instance.
 // This method implements the fmt.Stringer interface, allowing the Job to be printed in a readable format.
 // This is useful for logging and debugging purposes.
 // If you need to obsfucate the result, then you can override this method in your own implementation.
 func (j *Job[T]) String() string {
 	return fmt.Sprintf(
-		"Job[ID=%d, Status=%s, CreatedAt=%s, Start=%s, CompletedAt=%s, Error=%v, Duration=%s]",
+		"\nJob[ID=%d,\n Status=%s,\n CreatedAt=%s,\n Start=%s,\n CompletedAt=%s,\n Error=%v,\n Duration=%s\n]",
 		j.jobBase.ID(),
 		j.GetStatus(),
 		j.CreatedAt().Format(time.RFC3339),

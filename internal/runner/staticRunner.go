@@ -58,11 +58,12 @@ func NewStaticRunner[T any](strategy StaticStrategy, callback func(*Processable[
 //
 //	job := &Job[Result]{ID: 1}
 //	runner.AddJob(job)
-func (r *static[T]) AddJob(j Processable[T]) {
+func (r *static[T]) AddJob(j Processable[T]) error {
 	r.mu.Lock()
 	r.jobs = append(r.jobs, j)
 	r.mu.Unlock()
 	r.incrementTotalJobs()
+	return nil
 }
 
 // CheckProgress calculates and returns the progress of the runner as a percentage.
@@ -221,12 +222,12 @@ func (r *static[T]) runPriority(ctx context.Context) {
 			continue // Skip nil jobs
 		}
 		// Ensure the job implements the Priority interface
-		if priorityJob, ok := j.(*PriorityJob[any]); ok {
+		if priorityJob, ok := j.(*PriorityJob[T]); ok {
 			// Add to priority queue
 			pq.Push(priorityJob)
 		} else {
 			// Fallback to adding as a normal job if it doesn't implement Priority
-			pj, _ := NewPriorityJob[any](j, 0)
+			pj, _ := NewPriorityJob(j, 0)
 			pq.Push(pj)
 		}
 		r.incrementTotalJobs()

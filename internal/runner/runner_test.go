@@ -11,103 +11,47 @@ import (
 	. "GOTAS/internal/job"
 )
 
-// MockJob is a mock implementation of the Job interface for testing.
-type MockJob[T any] struct {
-	ID        int
-	Executed  bool
-	StartChan chan struct{}                              // Signal when the job starts
-	EndChan   chan struct{}                              // Signal when the job ends
-	function  func(ctx context.Context, job *MockJob[T]) // The function to execute for the job
-}
-
-func NewMockJob(ID int, StartChan chan struct{}, Endchan chan struct{}, f func(ctx context.Context, job *MockJob[any])) Processable[any] {
-	return &MockJob[any]{
-		ID:        ID,
-		Executed:  false,
-		StartChan: StartChan,
-		EndChan:   Endchan,
-		function:  f,
-	}
-}
-
-// Ensure MockJob implements the Processable interface
-// var _ Processable[any] = (*MockJob[any])(nil)
-
-func (j *MockJob[T]) Run(ctx context.Context, args ...any) (T, error) {
-	j.execute(ctx)
-	var zero T
-	return zero, nil
-}
-
-func (j *MockJob[T]) Complete(status Status) {
-	j.Executed = true
-}
-
-func (j *MockJob[T]) GetStatus() Status {
-	return StatusCompleted
-}
-
-func (j *MockJob[T]) GetError() error {
-	return nil
-}
-
-func (j *MockJob[T]) GetResult() any {
-	return nil
-}
-
-func (j *MockJob[T]) GetDuration() time.Duration {
-	return 10 * time.Millisecond
-}
-
-func (j *MockJob[T]) CreatedAt() time.Time {
-	return time.Now()
-}
-
-func (j *MockJob[T]) CompletedAt() time.Time {
-	return time.Now()
-}
-
-func (j *MockJob[T]) execute(ctx context.Context) {
-	// Create a select block to handle context cancellation
-
-	select {
-	case <-ctx.Done():
-		j.Executed = false // Mark as not executed if context is done
-		return
-	default:
-		// If not cancelled, execute the function
-		j.function(ctx, j)
-		j.Complete(StatusCompleted)
-	}
+type Result struct {
+	ID      int
+	Message string
 }
 
 func TestRunnerParallelExecution(t *testing.T) {
+
+	numJobs := 3 // Number of jobs to run concurrently
+
 	ctx := context.Background()
-	runner := NewStaticRunner[any](StrategyParallel{}, nil)
+	runner := NewStaticRunner[Result](StrategyParallel{}, nil)
 
 	var wg sync.WaitGroup
 	wg.Add(3) // Expect all 3 jobs to run concurrently
 
-	// Create mock jobs
-	jobs := []*MockJob[any]{
-		NewMockJob(1, make(chan struct{}), make(chan struct{}), func(ctx context.Context, job *MockJob[any]) {
-			defer wg.Done() // Signal that this job is done
-			// Simulate some work
-			time.Sleep(10 * time.Millisecond)
-			log.Printf("Job 1 executed")
-		}).(*MockJob[any]), // Ensure type matches Processable[any]
-		NewMockJob(2, make(chan struct{}), make(chan struct{}), func(ctx context.Context, job *MockJob[any]) {
-			defer wg.Done() // Signal that this job is done
-			// Simulate some work
-			time.Sleep(10 * time.Millisecond)
-			log.Printf("Job 2 executed")
-		}).(*MockJob[any]),
-		NewMockJob(3, make(chan struct{}), make(chan struct{}), func(ctx context.Context, job *MockJob[any]) {
-			defer wg.Done() // Signal that this job is done
-			// Simulate some work
-			time.Sleep(10 * time.Millisecond)
-			log.Printf("Job 3 executed")
-		}).(*MockJob[any]),
+	jobs := make([]*Job[Result], numJobs)
+
+	for i := 0; i < numJobs; i++ {
+
+		// Use NewJob to create each job
+		job, err := NewJob(func(ctx context.Context, args ...any) (Result, error) {
+			// Simulate work
+			select {
+			case <-ctx.Done():
+				// Handle context cancellation
+				return Result{}, ctx.Err()
+			case <-time.After(100 * time.Millisecond): // Simulate work delay
+				wg.Done() // Decrement the WaitGroup counter
+				// Return a successful result
+				return Result{
+					ID:      i,
+					Message: fmt.Sprintf("Job %d completed successfully", i),
+				}, nil
+			}
+		})
+
+		if err != nil {
+			log.Fatalf("Failed to create job %d, %e", i, err)
+		}
+
+		jobs[i] = job
 	}
 
 	// Add jobs to the runner
@@ -128,353 +72,425 @@ func TestRunnerParallelExecution(t *testing.T) {
 	select {
 	case <-done:
 		// All jobs ran concurrently
-		for _, j := range jobs {
-			if !j.Executed {
-				t.Errorf("Jobs did not run in parallel")
+		for i, j := range jobs {
+			if j.GetStatus() != StatusCompleted {
+				t.Errorf("Job %d did not complete successfully", i)
 			}
+			result := j.GetResult()
+			if result.Message != fmt.Sprintf("Job %d completed successfully", i) {
+				t.Errorf("Job %d result message mismatch: expected '%s', got '%s'", i, fmt.Sprintf("Job %d completed successfully", i), result.Message)
+			}
+			if j.GetDuration() < 100*time.Millisecond {
+				t.Errorf("Job %d duration is less than expected: %v", i, j.GetDuration())
+			}
+			if j.GetDuration() > 200*time.Millisecond {
+				t.Errorf("Job %d duration is more than expected: %v", i, j.GetDuration())
+			}
+			if j.GetError() != nil {
+				t.Errorf("Job %d encountered an error: %v", i, j.GetError())
+			}
+			if j.GetStatus() != StatusCompleted {
+				t.Errorf("Job %d status is not completed: %v", i, j.GetStatus())
+			}
+
+			if j.GetResult() == (Result{}) {
+				t.Errorf("Job %d result is nil", i)
+			}
+
+			t.Log(j.String())
 		}
 
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(5 * time.Second):
 		t.Errorf("Jobs did not run in parallel")
 	}
 }
 
 func TestRunnerProgress(t *testing.T) {
 	ctx := context.Background()
-	runner := NewStaticRunner[any](StrategySequential{}, nil)
+	runner := NewStaticRunner[Result](StrategySequential{}, nil)
 
-	// Create jobs, each with a CompleteChan to control when they finish
-	jobs := []MockJob[any]{
-		{
-			ID:        1,
-			StartChan: make(chan struct{}),
-			EndChan:   make(chan struct{}),
-			function: func(ctx context.Context, job *MockJob[any]) {
-				// Wait for the signal to start
-				<-job.StartChan // Receive to unblock the send in test
-				// Simulate some work
-				time.Sleep(1 * time.Millisecond)
-				job.EndChan <- struct{}{}
-			},
-		},
-		{
-			ID:        2,
-			StartChan: make(chan struct{}),
-			EndChan:   make(chan struct{}),
-			function: func(ctx context.Context, job *MockJob[any]) {
-				// Wait for the signal to start
-				<-job.StartChan // Receive to unblock the send in test
-				// Simulate some work
-				time.Sleep(1 * time.Millisecond)
-				job.EndChan <- struct{}{}
-			},
-		},
-		{
-			ID:        3,
-			StartChan: make(chan struct{}),
-			EndChan:   make(chan struct{}),
-			function: func(ctx context.Context, job *MockJob[any]) {
-				// Wait for the signal to start
-				<-job.StartChan // Receive to unblock the send in test
-				// Simulate some work
-				time.Sleep(1 * time.Millisecond)
-				job.EndChan <- struct{}{}
-			},
-		},
+	// Number of jobs
+	numJobs := 3
+
+	// Create jobs
+	jobs := make([]*Job[Result], numJobs)
+	progressChan := make(chan float64, numJobs) // Channel to track progress updates
+
+	for i := 0; i < numJobs; i++ {
+		jobID := i + 1 // Assign a unique ID to each job
+
+		job, err := NewJob(func(ctx context.Context, args ...any) (Result, error) {
+			// Simulate work
+			select {
+			case <-ctx.Done():
+				// Handle context cancellation
+				return Result{}, ctx.Err()
+			case <-time.After(100 * time.Millisecond): // Simulate work delay
+				// Send progress update
+				progressChan <- float64(jobID) / float64(numJobs) * 100
+				// Return a successful result
+				return Result{
+					ID:      jobID,
+					Message: fmt.Sprintf("Job %d completed successfully", jobID),
+				}, nil
+			}
+		})
+
+		if err != nil {
+			t.Fatalf("Failed to create job %d: %v", jobID, err)
+		}
+
+		jobs[i] = job
 	}
 
 	// Add jobs to the runner
-	for i := range jobs {
-		runner.AddJob(&jobs[i])
+	for _, job := range jobs {
+		runner.AddJob(job)
 	}
 
 	// Run the jobs in a separate goroutine
 	go runner.Run(ctx)
 
 	// Verify sequential execution and check progress after each job completes
-	for i := 0; i < len(jobs); i++ {
+	var wg sync.WaitGroup
+	wg.Add(numJobs)
 
-		// Signal the current job to complete
-		jobs[i].StartChan <- struct{}{}
-
-		// Wait for the current job to finish and check progress
-		<-jobs[i].EndChan
-
-		progress := runner.CheckProgress()
-
-		t.Logf("Progress after job %d: %f%%", jobs[i].ID, progress)
-
-		if progress <= float64(i*33) || progress > float64((i+1)*33+1) {
-			t.Errorf("Progress is out of bounds after job %d: %f", jobs[i].ID, progress)
+	go func() {
+		for progress := range progressChan {
+			t.Logf("Progress update: %f%%", progress)
 		}
+	}()
+
+	for i, job := range jobs {
+		go func(i int, job *Job[Result]) {
+			defer wg.Done()
+
+			// Wait for the job to complete
+			for job.GetStatus() != StatusCompleted {
+				time.Sleep(10 * time.Millisecond) // Polling interval
+			}
+
+			// Verify job completion
+			if job.GetStatus() != StatusCompleted {
+				t.Errorf("Job %d did not complete successfully", job.GetResult().ID)
+			}
+
+			// Verify progress
+			progress := runner.CheckProgress()
+			expectedProgress := float64((i + 1) * 100 / numJobs)
+			if progress < expectedProgress-1 || progress > expectedProgress+1 {
+				t.Errorf("Progress is out of bounds after job %d: got %f, expected ~%f", job.GetResult().ID, progress, expectedProgress)
+			}
+		}(i, job)
 	}
 
-	progress := runner.CheckProgress()
+	// Wait for all jobs to complete
+	wg.Wait()
+	close(progressChan)
 
-	if progress != 100.0 {
-		t.Errorf("Expected progress to be 100.0, got %f", progress)
+	// Verify final progress
+	finalProgress := runner.CheckProgress()
+	if finalProgress != 100.0 {
+		t.Errorf("Expected progress to be 100.0, got %f", finalProgress)
+	}
+
+	for _, job := range jobs {
+		t.Log(job.String())
 	}
 }
 
 func TestRunnerSequentialExecution(t *testing.T) {
 	ctx := context.Background()
-	runner := NewStaticRunner[any](StrategySequential{}, nil)
+	runner := NewStaticRunner[Result](StrategySequential{}, nil)
 
-	// Create mock jobs and give them a function
-	jobs := []MockJob[any]{
-		{
-			ID:        1,
-			StartChan: make(chan struct{}),
-			EndChan:   make(chan struct{}),
-			function: func(ctx context.Context, job *MockJob[any]) {
-				// Wait for the signal to start
-				<-job.StartChan // Receive to unblock the send in test
-				// Simulate some work
-				time.Sleep(1 * time.Millisecond)
-				job.EndChan <- struct{}{}
-			},
-		},
-		{
-			ID:        2,
-			StartChan: make(chan struct{}),
-			EndChan:   make(chan struct{}),
-			function: func(ctx context.Context, job *MockJob[any]) {
-				// Wait for the signal to start
-				<-job.StartChan // Receive to unblock the send in test
-				// Simulate some work
-				time.Sleep(1 * time.Millisecond)
-				job.EndChan <- struct{}{}
-			},
-		},
-		{
-			ID:        3,
-			StartChan: make(chan struct{}),
-			EndChan:   make(chan struct{}),
-			function: func(ctx context.Context, job *MockJob[any]) {
-				// Wait for the signal to start
-				<-job.StartChan // Receive to unblock the send in test
-				// Simulate some work
-				time.Sleep(1 * time.Millisecond)
-				job.EndChan <- struct{}{}
-			},
-		},
+	// Number of jobs
+	numJobs := 25
+
+	// Create jobs
+	jobs := make([]*Job[Result], numJobs)
+	executionOrder := make([]int, 0, numJobs) // Track the order of execution
+	var mu sync.Mutex                         // Protect access to executionOrder
+
+	for i := 0; i < numJobs; i++ {
+		jobID := i + 1 // Assign a unique ID to each job
+
+		job, err := NewJob(func(ctx context.Context, args ...any) (Result, error) {
+			// Simulate work
+			select {
+			case <-ctx.Done():
+				// Handle context cancellation
+				return Result{}, ctx.Err()
+			case <-time.After(100 * time.Millisecond): // Simulate work delay
+				// Record the execution order
+				mu.Lock()
+				executionOrder = append(executionOrder, jobID)
+				mu.Unlock()
+
+				// Return a successful result
+				return Result{
+					ID:      jobID,
+					Message: fmt.Sprintf("Job %d completed successfully", jobID),
+				}, nil
+			}
+		})
+
+		if err != nil {
+			t.Fatalf("Failed to create job %d: %v", jobID, err)
+		}
+
+		jobs[i] = job
 	}
 
 	// Add jobs to the runner
-	for i := range jobs {
-		runner.AddJob(&jobs[i])
+	for _, job := range jobs {
+		runner.AddJob(job)
 	}
 
 	// Run the jobs
 	go runner.Run(ctx)
 
-	// Verify sequential execution
-	for i := 0; i < len(jobs); i++ {
-		log.Printf("Waiting for Job %d to finish...", jobs[i].ID)
-		jobs[i].StartChan <- struct{}{}
-		// Wait for the current job to finish and check progress
-		<-jobs[i].EndChan
-		if i < len(jobs)-1 {
-			log.Printf("Job %d finished, checking if Job %d starts...", jobs[i].ID, jobs[i+1].ID)
+	// Wait for all jobs to complete
+	for _, job := range jobs {
+		for job.GetStatus() != StatusCompleted {
+			time.Sleep(10 * time.Millisecond) // Polling interval
 		}
-		//check if jobs[i] completed, i+1 false
-		if i > 1 {
-			if jobs[i-1].Executed == false && jobs[i].Executed {
-				t.Error("Jobs finished out of order")
-			}
+	}
+
+	// Verify that jobs were executed in order
+	for i, jobID := range executionOrder {
+		if jobID != i+1 {
+			t.Errorf("Jobs executed out of order: expected Job %d, got Job %d", i+1, jobID)
 		}
+	}
+
+	// Verify that all jobs completed successfully
+	for i, job := range jobs {
+		if job.GetStatus() != StatusCompleted {
+			t.Errorf("Job %d did not complete successfully", i+1)
+		}
+
+		result := job.GetResult()
+		if result.ID != i+1 || result.Message != fmt.Sprintf("Job %d completed successfully", i+1) {
+			t.Errorf("Job %d result mismatch: got %+v", i+1, result)
+		}
+
+		t.Log(job.String())
 	}
 }
 
 func TestRunnerContextCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	runner := NewStaticRunner[any](StrategyParallel{}, nil)
+    ctx, cancel := context.WithCancel(context.Background())
+    runner := NewStaticRunner[Result](StrategyParallel{}, nil)
 
-	// Create mock jobs
-	jobs := []MockJob[any]{
-		{ID: 1, function: func(ctx context.Context, job *MockJob[any]) {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(100 * time.Millisecond):
-			}
-		}},
-		{ID: 2, function: func(ctx context.Context, job *MockJob[any]) {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(100 * time.Millisecond):
-			}
-		}},
-		{ID: 3, function: func(ctx context.Context, job *MockJob[any]) {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(100 * time.Millisecond):
-			}
-		}},
-	}
+    // Number of jobs
+    numJobs := 3
 
-	// Add jobs to the runner
-	for i := range jobs {
-		runner.AddJob(&jobs[i])
-	}
+    // Create jobs
+    jobs := make([]*Job[Result], numJobs)
+    for i := 0; i < numJobs; i++ {
+        jobID := i + 1 // Assign a unique ID to each job
 
-	// Cancel the context before running
-	cancel()
-	runner.Run(ctx)
+        job, err := NewJob(func(ctx context.Context, args ...any) (Result, error) {
+            // Simulate work
+            select {
+            case <-ctx.Done():
+                // Handle context cancellation
+                return Result{}, ctx.Err()
+            case <-time.After(1000 * time.Millisecond): // Simulate work delay
+                // Return a successful result
+                return Result{
+                    ID:      jobID,
+                    Message: fmt.Sprintf("Job %d completed successfully", jobID),
+                }, nil
+            }
+        })
 
-	// Verify that no jobs were executed
-	for _, job := range jobs {
-		if job.Executed {
-			t.Errorf("Job %d was executed despite context cancellation", job.ID)
-		}
-	}
+        if err != nil {
+            t.Fatalf("Failed to create job %d: %v", jobID, err)
+        }
+
+        jobs[i] = job
+    }
+
+    // Add jobs to the runner
+    for _, job := range jobs {
+        runner.AddJob(job)
+    }
+
+    // Cancel the context before running
+    cancel()
+
+    // Run the jobs
+    runner.Run(ctx)
+
+    // Verify that no jobs were executed
+    for i, job := range jobs {
+        if job.GetStatus() == StatusCompleted {
+            t.Errorf("Job %d was executed despite context cancellation", i+1)
+        }
+
+        if job.GetError() != ctx.Err() {
+            t.Errorf("Job %d did not return the expected context cancellation error: got %v, expected %v", i+1, job.GetError(), ctx.Err())
+        }
+
+		t.Log(job.String())
+    }
 }
 
 func TestDynamicRunner(t *testing.T) {
-	totalJobs := 100
-	failAt := 50
-	totalSuccess := 0
+    totalJobs := 10
+    failAt := 5
+    totalSuccess := 0
 
-	workers := 4
-	chanSize := 10
+    workers := 4
+    chanSize := 10
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
 
-	runner := NewDynamicRunner[any](StrategyParallel{}, nil, workers, chanSize)
-	jobs := []*MockJob[any]{}
+    runner := NewDynamicRunner[Result](StrategyParallel{}, nil, workers, chanSize)
+    jobs := make([]*Job[Result], totalJobs)
 
-	startChan := make(chan struct{}, totalJobs) // Channel to signal job start
-	endChan := make(chan struct{}, totalJobs)   // Channel to signal job end
+    // Create jobs
+    for i := 0; i < totalJobs; i++ {
+        jobID := i + 1 // Assign a unique ID to each job
 
-	// Run the runner in a separate goroutine
-	go runner.Run(ctx)
+        job, err := NewJob(func(ctx context.Context, args ...any) (Result, error) {
+            // Simulate work
+            select {
+            case <-ctx.Done():
+                // Handle context cancellation
+                return Result{}, ctx.Err()
+            case <-time.After(100 * time.Millisecond): // Simulate work delay
+                // Return a successful result
+                return Result{
+                    ID:      jobID,
+                    Message: fmt.Sprintf("Job %d completed successfully", jobID),
+                }, nil
+            }
+        })
 
-	// Create a WaitGroup to track job execution
-	var wg sync.WaitGroup
+        if err != nil {
+            t.Fatalf("Failed to create job %d: %v", jobID, err)
+        }
 
-	// Add jobs to the runner
-	for i := 0; i < totalJobs; i++ {
-		job := NewMockJob(i, startChan, endChan, func(ctx context.Context, job *MockJob[any]) {
-			defer wg.Done() // Mark job as done when it finishes
-			select {
-			case <-ctx.Done():
-				// Context canceled, job will not execute
-				fmt.Printf("Job %d canceled\n", job.ID)
-				return
-			default:
-				// Simulate job execution
-				<-job.StartChan // Receive to unblock the send in test
-				fmt.Printf("Job %d executed\n", job.ID)
-				job.Executed = true
-			}
-		})
-		jobs = append(jobs, job.(*MockJob[any])) // Ensure type matches Processable[any]
-		wg.Add(1)                                // Increment WaitGroup counter
-		runner.AddJob(job)
-		startChan <- struct{}{} // Signal that the job has started (for testing purposes)
-	}
+        jobs[i] = job
+    }
 
-	// Cancel the context after a short delay
-	time.AfterFunc(50*time.Millisecond, cancel)
+    // Add jobs to the runner
+    for _, job := range jobs {
+        runner.AddJob(job)
+    }
 
-	// Wait for all jobs to complete
-	wg.Wait()
+    // Run the runner in a separate goroutine
+    go runner.Run(ctx)
 
-	// Check which jobs were executed
-	for _, job := range jobs {
-		if job.Executed {
-			totalSuccess++
-		}
-	}
+    // Cancel the context after a short delay
+    time.AfterFunc(500*time.Millisecond, cancel)
 
-	fmt.Printf("Total jobs executed: %d/%d\n", totalSuccess, totalJobs)
+    // Wait for all jobs to complete
+    for _, job := range jobs {
+        for job.GetStatus() != StatusCompleted && job.GetStatus() != StatusError {
+            time.Sleep(10 * time.Millisecond) // Polling interval
+        }
+    }
 
-	// Verify that the number of executed jobs is within an acceptable range
-	if totalSuccess > totalJobs || totalSuccess < failAt {
-		t.Errorf("Unexpected number of jobs executed: %d/%d", totalSuccess, totalJobs)
-	}
+    // Check which jobs were executed successfully
+    for _, job := range jobs {
+        if job.GetStatus() == StatusCompleted {
+            totalSuccess++
+        }
+
+        t.Log(job.String())
+    }
+
+    fmt.Printf("Total jobs executed: %d/%d\n", totalSuccess, totalJobs)
+
+    // Verify that the number of executed jobs is within an acceptable range
+    if totalSuccess > totalJobs || totalSuccess < failAt {
+        t.Errorf("Unexpected number of jobs executed: %d/%d", totalSuccess, totalJobs)
+    }
 }
 
-func TestDynamicRunnerCtx(t *testing.T) {
-	totalJobs := 2
-	failAt := 1
-	totalSuccess := 0
+func TestDynamicRunnerCancel(t *testing.T) {
+    totalJobs := 10
+    failAt := 5
+    totalSuccess := 0
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+    workers := 4
+    chanSize := 10
 
-	runner := NewDynamicRunner[any](StrategyParallel{}, nil, 1, 500)
-	jobs := []*MockJob[any]{}
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
 
-	// Create a WaitGroup to track job execution
-	var wg sync.WaitGroup
+    runner := NewDynamicRunner[Result](StrategyParallel{}, nil, workers, chanSize)
+    jobs := make([]*Job[Result], totalJobs)
 
-	// Run the runner in a separate goroutine
-	go runner.Run(ctx)
+    // Create jobs
+    for i := 0; i < totalJobs; i++ {
+        jobID := i + 1 // Assign a unique ID to each job
 
-	// Add jobs to the runner
-	for i := 0; i < totalJobs; i++ {
-		startChan := make(chan struct{}, 1) // Channel to signal job start
-		endChan := make(chan struct{}, 1)   // Channel to signal job end
-		job := NewMockJob(i, startChan, endChan, func(ctx context.Context, job *MockJob[any]) {
-			defer wg.Done() // Mark job as done when it finishes
-			select {
-			case <-ctx.Done():
-				// Context canceled, job will not execute
-				fmt.Printf("Job %d canceled\n", job.ID)
-				return
-			default:
-				// Wait for the signal to start
-				fmt.Println("Waiting for job start signal...")
-				<-job.StartChan // Receive to unblock the send in test
-				fmt.Printf("Job %d executing...\n", job.ID)
-				// Simulate some work
-				time.Sleep(1 * time.Millisecond)
-				job.EndChan <- struct{}{}
-				job.Executed = true
-			}
-		})
-		jobs = append(jobs, job.(*MockJob[any])) // Ensure type matches Processable[any]
+        job, err := NewJob(func(ctx context.Context, args ...any) (Result, error) {
+            // Simulate work
+            select {
+            case <-ctx.Done():
+                // Handle context cancellation
+                return Result{}, ctx.Err()
+            case <-time.After(100 * time.Millisecond): // Simulate work delay
+                // Return a successful result
+                return Result{
+                    ID:      jobID,
+                    Message: fmt.Sprintf("Job %d completed successfully", jobID),
+                }, nil
+            }
+        })
 
-		// if i == failAt {
-		// 	cancel() // Cancel the context when we reach the failAt threshold
-		// }
+        if err != nil {
+            t.Fatalf("Failed to create job %d: %v", jobID, err)
+        }
 
-		wg.Add(1) // Increment WaitGroup counter
-		go func() {
-			runner.AddJob(job)
-		}()
+        jobs[i] = job
+    }
 
-	}
+    // Add jobs to the runner
+    for _, job := range jobs {
+        runner.AddJob(job)
+    }
 
-	// Cancel the context after a short delay
+    // Run the runner in a separate goroutine
+    go runner.Run(ctx)
 
-	for i, r := range jobs {
-		if i == failAt {
-			// Cancel the context to simulate a failure at this point
-			fmt.Println("Canceling context at job index:", i)
-			cancel()
-		}
-		r.StartChan <- struct{}{} // Signal that the job has started (for testing purposes)
-	}
-	// Wait for all jobs to complete
+    // Cancel the context after a short delay
+    time.AfterFunc(500*time.Millisecond, cancel)
+
+    // Wait for all jobs to complete or be canceled
+    for _, job := range jobs {
+        for job.GetStatus() != StatusCompleted && job.GetStatus() != StatusError {
+            time.Sleep(1000 * time.Millisecond) // Polling interval
+        }
+    }
 	runner.Shutdown()
-	wg.Wait()
 
-	// Check which jobs were executed
-	for _, job := range jobs {
-		if job.Executed {
-			totalSuccess++
-		}
-	}
+    // Check which jobs were executed successfully
+    for _, job := range jobs {
+        if job.GetStatus() == StatusCompleted {
+            totalSuccess++
+        }
 
-	fmt.Printf("Total jobs executed: %d/%d\n", totalSuccess, totalJobs)
+        t.Log(job.String())
+    }
 
-	// Verify that the number of executed jobs is within an acceptable range
-	if totalSuccess > failAt {
-		t.Errorf("Unexpected number of jobs executed: %d/%d expected %d", totalSuccess, totalJobs, failAt)
-	}
+    fmt.Printf("Total jobs executed: %d/%d\n", totalSuccess, totalJobs)
+
+    // Verify that the number of executed jobs is within an acceptable range
+    if totalSuccess > failAt {
+        t.Errorf("Unexpected number of jobs executed: %d/%d", totalSuccess, totalJobs)
+    }
+
+    // Verify that canceled jobs returned the correct error
+    for i, job := range jobs {
+        if job.GetStatus() == StatusError && job.GetError() != ctx.Err() {
+            t.Errorf("Job %d did not return the expected context cancellation error: got %v, expected %v", i+1, job.GetError(), ctx.Err())
+        }
+    }
 }

@@ -2,6 +2,8 @@ package runner
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"sync"
 
 	. "GOTAS/internal/job"
@@ -9,8 +11,12 @@ import (
 
 var _ Runnable[any] = (*dynamic[any])(nil) // Ensure runner implements Runnable
 
-const DefaultMaxWorkers = 8
-const MaxAllowedWorkers = 1000
+const (
+	DefaultMaxWorkers  = 8
+	MaxAllowedWorkers  = 1000
+	DefaultChanSize    = 100
+	MaxAllowedChanSize = 10000
+)
 
 // dynamic represents a runner that executes jobs based on a strategy and can continuously run
 type dynamic[T any] struct {
@@ -42,7 +48,7 @@ func (r *dynamic[T]) closeJobQueue() {
 // NewDynamicRunner creates a new job runner with the specified execution strategy and an optional callback function.
 func NewDynamicRunner[T any](strategy DynamicStrategy, callback func(Processable[T]), workers, chanSize int) *dynamic[T] {
 	//default workers 8
-	workers = clampWorkers(workers, DefaultMaxWorkers, MaxAllowedWorkers)
+	workers = clampWorkers(workers)
 
 	// default channel size if not provided
 	chanSize = clampChan(chanSize)
@@ -64,17 +70,17 @@ func NewDynamicRunner[T any](strategy DynamicStrategy, callback func(Processable
 func clampChan(chanSize int) int {
 	// Ensure the channel size is a positive integer, default to 100 if not provided or invalid
 	if chanSize <= 0 {
-		chanSize = 100 // Default buffered channel size
+		chanSize = DefaultChanSize // Default buffered channel size
 	}
 
 	//protect against too large of a channel size, cap it at 10000 to avoid memory issues
-	if chanSize > 10000 {
-		chanSize = 10000 // Cap the channel size to avoid excessive memory usage
+	if chanSize > MaxAllowedChanSize {
+		chanSize = MaxAllowedChanSize // Cap the channel size to avoid excessive memory usage
 	}
 	return chanSize
 }
 
-func clampWorkers(workers, DefaultMaxWorkers, MaxAllowedWorkers int) int {
+func clampWorkers(workers int) int {
 	if workers > MaxAllowedWorkers {
 		return MaxAllowedWorkers // Cap at MaxAllowedWorkers
 	}
@@ -85,23 +91,29 @@ func clampWorkers(workers, DefaultMaxWorkers, MaxAllowedWorkers int) int {
 }
 
 // AddJob implements Runnable.
-func (r *dynamic[T]) AddJob(j Processable[T]) {
+func (r *dynamic[T]) AddJob(j Processable[T]) error {
 	r.mu.Lock()
 	if r.closed {
-		// If the runner is closed, do not accept any more jobs
-		return
+		return fmt.Errorf("runner is closed, cannot accept new jobs")
 	}
 	r.mu.Unlock()
 
 	r.jobs <- j
 	r.incrementTotalJobs()
+	return nil
+}
+
+func (r *dynamic[T]) IsClosed() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.closed
 }
 
 // CheckProgress implements Runnable.
 func (r *dynamic[T]) CheckProgress() float64 {
 
 	r.mu.Lock()
-	if r.totalJobs <= 0 {
+	if r.totalJobs == 0 {
 		return 0.0 // Avoid division by zero
 	}
 	if r.completedJobs < 0 {
@@ -110,7 +122,7 @@ func (r *dynamic[T]) CheckProgress() float64 {
 	// Calculate progress as a percentage
 	progress := float64(r.completedJobs) / float64(r.totalJobs)
 	r.mu.Unlock()
-	return progress
+	return math.Round(progress*100) / 100
 }
 
 // Run implements Runnable.
@@ -132,34 +144,28 @@ func (r *dynamic[T]) Run(ctx context.Context) {
 func (r *dynamic[T]) runParallel(ctx context.Context) {
 	for i := 0; i < r.workers; i++ {
 		r.wg.Add(1)
-		go func(id int) {
-			defer r.wg.Done()
-			for {
-				select {
-				case <-ctx.Done():
-					return // Respect context cancel
-				case j, ok := <-r.jobs:
-					if !ok {
-						return // Channel closed, stop worker
-					}
-
-					_, err := j.Run(ctx)
-					if err != nil {
-						// Optionally log or handle the error
-						continue
-					}
-
-					r.incrementCompletedJobs()
-
-					if r.callback != nil {
-						r.callback(j)
-					}
+		for {
+			select {
+			case j, ok := <-r.jobs:
+				if !ok {
+					r.wg.Done()
+					return // Channel closed, stop worker
 				}
+				_, err := j.Run(ctx)
+				if err != nil {
+					continue
+				}
+				if r.callback != nil {
+					r.callback(j)
+				}
+				r.incrementCompletedJobs()
+			case <-ctx.Done():
+				r.wg.Done()
+				return // Context canceled, stop worker
 			}
-		}(i)
+		}
 	}
 }
-
 
 func (r *dynamic[T]) runRetry(ctx context.Context) {
 	panic("unimplemented")
@@ -174,7 +180,7 @@ func (r *dynamic[T]) runFailFast(ctx context.Context) {
 }
 
 func (r *dynamic[T]) runSequential(ctx context.Context) {
-	panic("unimplemented")
+
 }
 
 // incrementCompletedJobs increments the count of completed jobs in a thread-safe manner.

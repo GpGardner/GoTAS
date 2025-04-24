@@ -172,7 +172,7 @@ func runDoubleJob(ctx context.Context) {
 	// Collect results from the outer runner
 	fmt.Println("Outer Runner Results:")
 	for _, outerJob := range outerJobs {
-		result := outerJob.GetResult().(Result)
+		result := outerJob.GetResult()
 		fmt.Println(outerJob.String() + " - " + result.String())
 	}
 

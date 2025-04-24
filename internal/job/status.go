@@ -58,13 +58,13 @@ const (
 
 // --- Utility Methods ---
 
-// IsExecution checks if a status is in the execution phase (before completion or failure).
-func (s Status) IsExecution() bool {
-	return s == StatusCreated || s == StatusPending || s == StatusRunning
+// IsExecuting checks if a status is in the execution phase (before completion or failure).
+func (s Status) IsExecuting() bool {
+	return s == StatusRunning
 }
 
-// IsCompletion checks if a status indicates successful job completion.
-func (s Status) IsCompletion() bool {
+// IsCompleted checks if a status indicates successful job completion.
+func (s Status) IsCompleted() bool {
 	return s == StatusCompleted
 }
 

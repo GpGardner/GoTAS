@@ -57,7 +57,7 @@ func NewPriorityJob[T any](job Processable[T], priority uint8) (*PriorityJob[T],
 // Returns:
 // - The result of the job execution.
 // - An error if the job fails.
-func (p *PriorityJob[T]) Run(ctx context.Context, args ...any) (any, error) {
+func (p *PriorityJob[T]) Run(ctx context.Context, args ...any) (T, error) {
 	return p.job.Run(ctx)
 }
 
@@ -94,7 +94,7 @@ func (p *PriorityJob[T]) GetError() error {
 // Returns:
 // - The result of the job execution.
 func (p *PriorityJob[T]) GetResult() T {
-	return p.job.GetResult().(T)
+	return p.job.GetResult()
 }
 
 // GetDuration retrieves the duration of the wrapped job's execution.
@@ -138,6 +138,6 @@ func (j *Job[T]) WithPriority(i uint8) *PriorityJob[T] {
 	if j == nil {
 		return nil
 	}
-	job, _ := NewPriorityJob[T](j, i)
+	job, _ := NewPriorityJob(j, i)
 	return job
 }

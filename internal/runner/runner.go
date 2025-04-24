@@ -11,6 +11,6 @@ import (
 
 type Runnable[T any] interface {
 	Run(ctx context.Context)
-	AddJob(j Processable[T])
+	AddJob(j Processable[T]) error
 	CheckProgress() float64
 }
