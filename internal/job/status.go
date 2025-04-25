@@ -63,6 +63,16 @@ func (s Status) IsExecuting() bool {
 	return s == StatusRunning
 }
 
+// IsPending checks if a status indicates the job is waiting for dependencies.
+func (s Status) IsPending() bool {
+	return s == StatusPending
+}
+
+// IsCreated checks if a status indicates the job is newly created.
+func (s Status) IsCreated() bool {
+	return s == StatusCreated
+}
+
 // IsCompleted checks if a status indicates successful job completion.
 func (s Status) IsCompleted() bool {
 	return s == StatusCompleted

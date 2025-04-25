@@ -279,218 +279,170 @@ func TestRunnerSequentialExecution(t *testing.T) {
 }
 
 func TestRunnerContextCancellation(t *testing.T) {
-    ctx, cancel := context.WithCancel(context.Background())
-    runner := NewStaticRunner[Result](StrategyParallel{}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	runner := NewStaticRunner[Result](StrategyParallel{}, nil)
 
-    // Number of jobs
-    numJobs := 3
+	// Number of jobs
+	numJobs := 3
 
-    // Create jobs
-    jobs := make([]*Job[Result], numJobs)
-    for i := 0; i < numJobs; i++ {
-        jobID := i + 1 // Assign a unique ID to each job
+	// Create jobs
+	jobs := make([]*Job[Result], numJobs)
+	for i := 0; i < numJobs; i++ {
+		jobID := i + 1 // Assign a unique ID to each job
 
-        job, err := NewJob(func(ctx context.Context, args ...any) (Result, error) {
-            // Simulate work
-            select {
-            case <-ctx.Done():
-                // Handle context cancellation
-                return Result{}, ctx.Err()
-            case <-time.After(1000 * time.Millisecond): // Simulate work delay
-                // Return a successful result
-                return Result{
-                    ID:      jobID,
-                    Message: fmt.Sprintf("Job %d completed successfully", jobID),
-                }, nil
-            }
-        })
+		job, err := NewJob(func(ctx context.Context, args ...any) (Result, error) {
+			// Simulate work
+			select {
+			case <-ctx.Done():
+				// Handle context cancellation
+				return Result{}, ctx.Err()
+			case <-time.After(1000 * time.Millisecond): // Simulate work delay
+				// Return a successful result
+				return Result{
+					ID:      jobID,
+					Message: fmt.Sprintf("Job %d completed successfully", jobID),
+				}, nil
+			}
+		})
 
-        if err != nil {
-            t.Fatalf("Failed to create job %d: %v", jobID, err)
-        }
+		if err != nil {
+			t.Fatalf("Failed to create job %d: %v", jobID, err)
+		}
 
-        jobs[i] = job
-    }
+		jobs[i] = job
+	}
 
-    // Add jobs to the runner
-    for _, job := range jobs {
-        runner.AddJob(job)
-    }
+	// Add jobs to the runner
+	for _, job := range jobs {
+		runner.AddJob(job)
+	}
 
-    // Cancel the context before running
-    cancel()
+	// Cancel the context before running
+	cancel()
 
-    // Run the jobs
-    runner.Run(ctx)
+	// Run the jobs
+	runner.Run(ctx)
 
-    // Verify that no jobs were executed
-    for i, job := range jobs {
-        if job.GetStatus() == StatusCompleted {
-            t.Errorf("Job %d was executed despite context cancellation", i+1)
-        }
+	// Verify that no jobs were executed
+	for i, job := range jobs {
+		if job.GetStatus() == StatusCompleted {
+			t.Errorf("Job %d was executed despite context cancellation", i+1)
+		}
 
-        if job.GetError() != ctx.Err() {
-            t.Errorf("Job %d did not return the expected context cancellation error: got %v, expected %v", i+1, job.GetError(), ctx.Err())
-        }
+		if job.GetError() != ctx.Err() {
+			t.Errorf("Job %d did not return the expected context cancellation error: got %v, expected %v", i+1, job.GetError(), ctx.Err())
+		}
 
 		t.Log(job.String())
-    }
+	}
 }
 
 func TestDynamicRunner(t *testing.T) {
-    totalJobs := 10
-    failAt := 5
-    totalSuccess := 0
+	totalJobs := 100
+	workers := 4
+	chanSize := 10
 
-    workers := 4
-    chanSize := 10
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-    ctx, cancel := context.WithCancel(context.Background())
-    defer cancel()
+	runner := NewDynamicRunner[Result](StrategyParallel{}, nil, workers, chanSize)
+	runner.Run(ctx)
 
-    runner := NewDynamicRunner[Result](StrategyParallel{}, nil, workers, chanSize)
-    jobs := make([]*Job[Result], totalJobs)
+	jobs := make([]*Job[Result], totalJobs)
 
-    // Create jobs
-    for i := 0; i < totalJobs; i++ {
-        jobID := i + 1 // Assign a unique ID to each job
+	// Create jobs
+	for i := 0; i < totalJobs; i++ {
+		jobID := i + 1
+		job, err := NewJob(func(ctx context.Context, args ...any) (Result, error) {
+			select {
+			case <-ctx.Done():
+				return Result{}, ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+				return Result{
+					ID:      jobID,
+					Message: fmt.Sprintf("Job %d completed successfully", jobID),
+				}, nil
+			}
+		})
+		if err != nil {
+			t.Fatalf("Failed to create job %d: %v", jobID, err)
+		}
+		jobs[i] = job
+		runner.AddJob(job)
+	}
 
-        job, err := NewJob(func(ctx context.Context, args ...any) (Result, error) {
-            // Simulate work
-            select {
-            case <-ctx.Done():
-                // Handle context cancellation
-                return Result{}, ctx.Err()
-            case <-time.After(100 * time.Millisecond): // Simulate work delay
-                // Return a successful result
-                return Result{
-                    ID:      jobID,
-                    Message: fmt.Sprintf("Job %d completed successfully", jobID),
-                }, nil
-            }
-        })
+	// Shutdown the runner and wait for all jobs to complete
+	runner.Shutdown()
 
-        if err != nil {
-            t.Fatalf("Failed to create job %d: %v", jobID, err)
-        }
-
-        jobs[i] = job
-    }
-
-    // Add jobs to the runner
-    for _, job := range jobs {
-        runner.AddJob(job)
-    }
-
-    // Run the runner in a separate goroutine
-    go runner.Run(ctx)
-
-    // Cancel the context after a short delay
-    time.AfterFunc(500*time.Millisecond, cancel)
-
-    // Wait for all jobs to complete
-    for _, job := range jobs {
-        for job.GetStatus() != StatusCompleted && job.GetStatus() != StatusError {
-            time.Sleep(10 * time.Millisecond) // Polling interval
-        }
-    }
-
-    // Check which jobs were executed successfully
-    for _, job := range jobs {
-        if job.GetStatus() == StatusCompleted {
-            totalSuccess++
-        }
-
-        t.Log(job.String())
-    }
-
-    fmt.Printf("Total jobs executed: %d/%d\n", totalSuccess, totalJobs)
-
-    // Verify that the number of executed jobs is within an acceptable range
-    if totalSuccess > totalJobs || totalSuccess < failAt {
-        t.Errorf("Unexpected number of jobs executed: %d/%d", totalSuccess, totalJobs)
-    }
+	// Verify all jobs were processed
+	for _, job := range jobs {
+		t.Log(job.String())
+		if !job.GetStatus().IsCompleted() {
+			t.Errorf("Job %d was not completed", job.GetResult().ID)
+		}
+	}
 }
 
 func TestDynamicRunnerCancel(t *testing.T) {
-    totalJobs := 10
-    failAt := 5
-    totalSuccess := 0
+	totalJobs := 10000
+	workers := 100
+	chanSize := 5000
 
-    workers := 4
-    chanSize := 10
+	totalSuccess := 0
+	failAt := 50
 
-    ctx, cancel := context.WithCancel(context.Background())
-    defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-    runner := NewDynamicRunner[Result](StrategyParallel{}, nil, workers, chanSize)
-    jobs := make([]*Job[Result], totalJobs)
+	runner := NewDynamicRunner[Result](StrategyParallel{}, nil, workers, chanSize)
+	runner.Run(ctx)
 
-    // Create jobs
-    for i := 0; i < totalJobs; i++ {
-        jobID := i + 1 // Assign a unique ID to each job
+	jobs := make([]*Job[Result], totalJobs)
 
-        job, err := NewJob(func(ctx context.Context, args ...any) (Result, error) {
-            // Simulate work
-            select {
-            case <-ctx.Done():
-                // Handle context cancellation
-                return Result{}, ctx.Err()
-            case <-time.After(100 * time.Millisecond): // Simulate work delay
-                // Return a successful result
-                return Result{
-                    ID:      jobID,
-                    Message: fmt.Sprintf("Job %d completed successfully", jobID),
-                }, nil
-            }
-        })
+	// Create jobs
+	for i := 0; i < totalJobs; i++ {
+		jobID := i + 1
+		job, err := NewJob(func(ctx context.Context, args ...any) (Result, error) {
+			select {
+			case <-ctx.Done():
+				return Result{}, ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+				return Result{
+					ID:      jobID,
+					Message: fmt.Sprintf("Job %d completed successfully", jobID),
+				}, nil
+			}
+		})
+		if err != nil {
+			t.Fatalf("Failed to create job %d: %v", jobID, err)
+		}
+		jobs[i] = job
+		runner.AddJob(job)
+	}
 
-        if err != nil {
-            t.Fatalf("Failed to create job %d: %v", jobID, err)
-        }
-
-        jobs[i] = job
-    }
-
-    // Add jobs to the runner
-    for _, job := range jobs {
-        runner.AddJob(job)
-    }
-
-    // Run the runner in a separate goroutine
-    go runner.Run(ctx)
-
-    // Cancel the context after a short delay
-    time.AfterFunc(500*time.Millisecond, cancel)
-
-    // Wait for all jobs to complete or be canceled
-    for _, job := range jobs {
-        for job.GetStatus() != StatusCompleted && job.GetStatus() != StatusError {
-            time.Sleep(1000 * time.Millisecond) // Polling interval
-        }
-    }
+	// Shutdown the runner and wait for all jobs to complete
 	runner.Shutdown()
 
-    // Check which jobs were executed successfully
-    for _, job := range jobs {
-        if job.GetStatus() == StatusCompleted {
-            totalSuccess++
-        }
+	// Check which jobs were executed successfully
+	for _, job := range jobs {
+		if job.GetStatus() == StatusCompleted {
+			totalSuccess++
+		}
 
-        t.Log(job.String())
-    }
+		t.Log(job.String())
+	}
 
-    fmt.Printf("Total jobs executed: %d/%d\n", totalSuccess, totalJobs)
+	fmt.Printf("Total jobs executed: %d/%d\n", totalSuccess, totalJobs)
 
-    // Verify that the number of executed jobs is within an acceptable range
-    if totalSuccess > failAt {
-        t.Errorf("Unexpected number of jobs executed: %d/%d", totalSuccess, totalJobs)
-    }
+	// Verify that the number of executed jobs is within an acceptable range
+	if totalSuccess > failAt {
+		t.Errorf("Unexpected number of jobs executed: %d/%d", totalSuccess, totalJobs)
+	}
 
-    // Verify that canceled jobs returned the correct error
-    for i, job := range jobs {
-        if job.GetStatus() == StatusError && job.GetError() != ctx.Err() {
-            t.Errorf("Job %d did not return the expected context cancellation error: got %v, expected %v", i+1, job.GetError(), ctx.Err())
-        }
-    }
+	// Verify that canceled jobs returned the correct error
+	for i, job := range jobs {
+		if job.GetStatus() == StatusError && job.GetError() != ctx.Err() {
+			t.Errorf("Job %d did not return the expected context cancellation error: got %v, expected %v", i+1, job.GetError(), ctx.Err())
+		}
+	}
 }

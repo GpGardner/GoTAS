@@ -34,17 +34,6 @@ type dynamic[T any] struct {
 	totalJobs     int // totalJobs is the total number of jobs in the runner
 }
 
-func (r *dynamic[T]) closeJobQueue() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if !r.closed {
-		r.closed = true
-		close(r.jobs)
-	}
-
-}
-
 // NewDynamicRunner creates a new job runner with the specified execution strategy and an optional callback function.
 func NewDynamicRunner[T any](strategy DynamicStrategy, callback func(Processable[T]), workers, chanSize int) *dynamic[T] {
 	//default workers 8
@@ -142,28 +131,36 @@ func (r *dynamic[T]) Run(ctx context.Context) {
 }
 
 func (r *dynamic[T]) runParallel(ctx context.Context) {
+
+	// Create a worker pool to process jobs concurrently
+	// Each worker will run a job from the jobs channel
+	// The number of workers is determined by the workers field
+	// The workers will run until the context is cancelled or the channel is closed
 	for i := 0; i < r.workers; i++ {
 		r.wg.Add(1)
-		for {
-			select {
-			case j, ok := <-r.jobs:
-				if !ok {
+
+		go func(workerID int) {
+			for {
+				select {
+				case j, ok := <-r.jobs:
+					if !ok {
+						r.wg.Done()
+						return // Channel closed, stop worker
+					}
+					_, err := j.Run(ctx)
+					if err != nil {
+						continue
+					}
+					if r.callback != nil {
+						r.callback(j)
+					}
+					r.incrementCompletedJobs()
+				case <-ctx.Done():
 					r.wg.Done()
-					return // Channel closed, stop worker
+					return // Context canceled, stop worker
 				}
-				_, err := j.Run(ctx)
-				if err != nil {
-					continue
-				}
-				if r.callback != nil {
-					r.callback(j)
-				}
-				r.incrementCompletedJobs()
-			case <-ctx.Done():
-				r.wg.Done()
-				return // Context canceled, stop worker
 			}
-		}
+		}(i)
 	}
 }
 
@@ -204,6 +201,12 @@ func (r *dynamic[T]) incrementTotalJobs() {
 }
 
 func (r *dynamic[T]) Shutdown() {
-	r.closeJobQueue() // Close the job queue to stop accepting new jobs
-	r.wg.Wait()       // Wait for all workers to finish processing
+	r.mu.Lock()
+	if !r.closed {
+		r.closed = true
+		close(r.jobs)
+	}
+
+	r.mu.Unlock()
+	r.wg.Wait() // Wait for all workers to finish processing
 }
