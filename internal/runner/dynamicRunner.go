@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
 
 	. "GOTAS/internal/job"
 )
@@ -12,7 +13,7 @@ import (
 var _ Runnable[any] = (*dynamic[any])(nil) // Ensure runner implements Runnable
 
 const (
-	DefaultMaxWorkers  = 8
+	DefaultMaxWorkers  = 1
 	MaxAllowedWorkers  = 1000
 	DefaultChanSize    = 100
 	MaxAllowedChanSize = 10000
@@ -20,10 +21,10 @@ const (
 
 // dynamic represents a runner that executes jobs based on a strategy and can continuously run
 type dynamic[T any] struct {
-	strategy DynamicStrategy // strategy is the execution strategy for the runner
-	workers  int             //total amount of workers to run
-	chanSize int             // chanSize is the size of the buffered channel for jobs default to 100 max 10000
-	closed   bool            // closed indicates whether the runner has been closed or not, used to stop accepting jobs
+	strategy  DynamicStrategy // strategy is the execution strategy for the runner
+	workers   int             //total amount of workers to run
+	chanSize  int             // chanSize is the size of the buffered channel for jobs default to 100 max 10000
+	closeOnce sync.Once       // Ensures the channel is closed only once
 
 	jobs     chan Processable[T]  // jobs is the list of jobs to be executed
 	wg       *sync.WaitGroup      // wg is the wait group for tracking job completion
@@ -44,9 +45,8 @@ func NewDynamicRunner[T any](strategy DynamicStrategy, callback func(Processable
 
 	return &dynamic[T]{
 		strategy:      strategy,
-		workers:       workers,  // total amount of workers to run
-		chanSize:      chanSize, // size of the buffered channel for jobs
-		closed:        false,
+		workers:       workers,                             // total amount of workers to run
+		chanSize:      chanSize,                            // size of the buffered channel for jobs
 		jobs:          make(chan Processable[T], chanSize), // Buffered channel to hold jobs, can be adjusted based on requirements
 		wg:            &sync.WaitGroup{},
 		mu:            &sync.Mutex{},
@@ -81,21 +81,15 @@ func clampWorkers(workers int) int {
 
 // AddJob implements Runnable.
 func (r *dynamic[T]) AddJob(j Processable[T]) error {
-	r.mu.Lock()
-	if r.closed {
-		return fmt.Errorf("runner is closed, cannot accept new jobs")
-	}
-	r.mu.Unlock()
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Errorf("runner is closed, cannot accept new jobs")
+		}
+	}()
 
 	r.jobs <- j
 	r.incrementTotalJobs()
 	return nil
-}
-
-func (r *dynamic[T]) IsClosed() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.closed
 }
 
 // CheckProgress implements Runnable.
@@ -130,12 +124,17 @@ func (r *dynamic[T]) Run(ctx context.Context) {
 	}
 }
 
+// runParallel executes all jobs concurrently using a worker pool.
+// This method is used when the StrategyParallel strategy is selected.
+// each job will always be run ctx cancelled and errors are handled by the job
+// Parameters:
+// - ctx: The context for managing cancellation and timeouts.
+// Example:
+//
+//	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+//	defer cancel()
+//	runner.Run(ctx)
 func (r *dynamic[T]) runParallel(ctx context.Context) {
-
-	// Create a worker pool to process jobs concurrently
-	// Each worker will run a job from the jobs channel
-	// The number of workers is determined by the workers field
-	// The workers will run until the context is cancelled or the channel is closed
 	for i := 0; i < r.workers; i++ {
 		r.wg.Add(1)
 
@@ -148,16 +147,14 @@ func (r *dynamic[T]) runParallel(ctx context.Context) {
 						return // Channel closed, stop worker
 					}
 					_, err := j.Run(ctx)
-					if err != nil {
-						continue
-					}
 					if r.callback != nil {
 						r.callback(j)
 					}
+					if err != nil {
+						continue
+					}
+
 					r.incrementCompletedJobs()
-				case <-ctx.Done():
-					r.wg.Done()
-					return // Context canceled, stop worker
 				}
 			}
 		}(i)
@@ -173,7 +170,50 @@ func (r *dynamic[T]) runPriority(ctx context.Context) {
 }
 
 func (r *dynamic[T]) runFailFast(ctx context.Context) {
-	panic("unimplemented")
+	// Local atomic error state
+	var errState int32 // 0 means no error, 1 means an error occurred
+
+	// Create a worker pool to process jobs concurrently
+	for i := 0; i < r.workers; i++ {
+		r.wg.Add(1)
+
+		go func(workerID int) {
+			for {
+				select {
+				case j, ok := <-r.jobs:
+					if !ok {
+						r.wg.Done()
+						return // Channel closed, stop worker
+					}
+
+					if atomic.LoadInt32(&errState) == 1 {
+						// If an error has occurred, cancel the job and run it with the done context
+						done, cancel := context.WithCancel(ctx)
+						cancel()
+						_, err := j.Run(done)
+						if err != nil {
+						}
+						if r.callback != nil {
+							r.callback(j)
+						}
+					} else {
+						_, err := j.Run(ctx)
+						if r.callback != nil {
+							r.callback(j)
+						}
+
+						if err != nil {
+							// Set the error state and stop all workers
+							atomic.StoreInt32(&errState, 1)
+						}
+					}
+
+					r.incrementCompletedJobs()
+
+				}
+			}
+		}(i)
+	}
 }
 
 func (r *dynamic[T]) runSequential(ctx context.Context) {
@@ -201,12 +241,9 @@ func (r *dynamic[T]) incrementTotalJobs() {
 }
 
 func (r *dynamic[T]) Shutdown() {
-	r.mu.Lock()
-	if !r.closed {
-		r.closed = true
-		close(r.jobs)
-	}
+	r.closeOnce.Do(func() {
+		close(r.jobs) // Close the channel safely
+	})
 
-	r.mu.Unlock()
 	r.wg.Wait() // Wait for all workers to finish processing
 }

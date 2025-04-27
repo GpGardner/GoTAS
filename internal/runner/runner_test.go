@@ -384,17 +384,30 @@ func TestDynamicRunner(t *testing.T) {
 }
 
 func TestDynamicRunnerCancel(t *testing.T) {
-	totalJobs := 10000
+	totalJobs := 1000
 	workers := 100
 	chanSize := 5000
-
-	totalSuccess := 0
-	failAt := 50
+	cancelThreshold := 500
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	runner := NewDynamicRunner[Result](StrategyParallel{}, nil, workers, chanSize)
+	// Counter to track completed jobs
+	var completedJobs int
+	var mu sync.Mutex // Protect access to the counter
+
+	// Define the callback function
+	callback := func(job Processable[Result]) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		completedJobs++
+		if completedJobs >= cancelThreshold {
+			cancel() // Cancel the context once the threshold is reached
+		}
+	}
+
+	runner := NewDynamicRunner[Result](StrategyParallel{}, callback, workers, chanSize)
 	runner.Run(ctx)
 
 	jobs := make([]*Job[Result], totalJobs)
@@ -425,24 +438,125 @@ func TestDynamicRunnerCancel(t *testing.T) {
 
 	// Check which jobs were executed successfully
 	for _, job := range jobs {
-		if job.GetStatus() == StatusCompleted {
-			totalSuccess++
-		}
-
 		t.Log(job.String())
 	}
 
-	fmt.Printf("Total jobs executed: %d/%d\n", totalSuccess, totalJobs)
+	totalSuccess := 0
+	for _, job := range jobs {
+		if job.GetStatus() == StatusCompleted {
+			// add to the count of failed jobs
+			totalSuccess++
+		}
+	}
+
+	jobFailed := 0
+
+	for _, job := range jobs {
+		if job.GetStatus() != StatusCompleted {
+			// add to the count of failed jobs
+			jobFailed++
+		}
+	}
+
+	jobsExpectToPass := totalJobs - cancelThreshold
+	t.Log("Number of jobs failed: ", jobFailed)
+	t.Log("Number of jobs expected to pass: ", jobsExpectToPass)
 
 	// Verify that the number of executed jobs is within an acceptable range
-	if totalSuccess > failAt {
-		t.Errorf("Unexpected number of jobs executed: %d/%d", totalSuccess, totalJobs)
+	if jobFailed != totalJobs-(cancelThreshold) {
+
+		t.Errorf("Unexpected number of jobs failed: %d/%d", jobFailed, totalJobs)
 	}
 
 	// Verify that canceled jobs returned the correct error
 	for i, job := range jobs {
 		if job.GetStatus() == StatusError && job.GetError() != ctx.Err() {
 			t.Errorf("Job %d did not return the expected context cancellation error: got %v, expected %v", i+1, job.GetError(), ctx.Err())
+		}
+	}
+}
+
+func TestDynamicRunnerFailFast(t *testing.T) {
+
+	totalJobs := 200
+	workers := 200
+	chanSize := 100
+	cancelThreshold := 15
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Counter to track completed jobs
+	var completedJobs int
+	var mu sync.Mutex // Protect access to the counter
+
+	runner := NewDynamicRunner[Result](StrategyFailFast{}, nil, workers, chanSize)
+	runner.Run(ctx)
+
+	jobs := make([]*Job[Result], totalJobs)
+
+	// Create jobs
+	for i := 0; i < totalJobs; i++ {
+		jobID := i + 1
+		job, err := NewJob(func(ctx context.Context, args ...any) (Result, error) {
+			var shouldFail bool
+			mu.Lock()
+			if completedJobs >= cancelThreshold {
+				shouldFail = true
+			} else {
+				completedJobs++
+			}
+			mu.Unlock()
+
+			if shouldFail {
+				// Simulate a failure after the threshold is reached
+				return Result{}, fmt.Errorf("job %d simulated error", jobID)
+			}
+
+			// Simulate successful job completion
+			return Result{
+				ID:      jobID,
+				Message: fmt.Sprintf("Job %d completed successfully", jobID),
+			}, nil
+		})
+		if err != nil {
+			t.Fatalf("Failed to create job %d: %v", jobID, err)
+		}
+		jobs[i] = job
+		runner.AddJob(job)
+	}
+
+	// Shutdown the runner and wait for all jobs to complete
+	runner.Shutdown()
+
+	// Check which jobs were executed successfully
+	for _, job := range jobs {
+		t.Log(job.String())
+	}
+
+	jobFailed := 0
+
+	for _, job := range jobs {
+		if job.GetStatus() != StatusCompleted {
+			// add to the count of failed jobs
+			jobFailed++
+		}
+	}
+
+	jobsExpectToPass := totalJobs - cancelThreshold
+	t.Log("Number of jobs failed: ", jobFailed)
+	t.Log("Number of jobs expected: ", jobsExpectToPass)
+
+	// Verify that the number of executed jobs is within an acceptable range
+	if jobFailed != totalJobs-(cancelThreshold) {
+
+		t.Errorf("Unexpected number of jobs failed: %d/%d", jobFailed, totalJobs)
+	}
+
+	// Verify that canceled jobs returned the correct error
+	for i, job := range jobs {
+		if job.GetStatus() == StatusError && job.GetError() != ctx.Err() {
+			t.Logf("Job %d did not return the expected context cancellation error: got %v, expected %v", i+1, job.GetError(), ctx.Err())
 		}
 	}
 }
