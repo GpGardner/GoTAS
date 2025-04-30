@@ -215,7 +215,7 @@ func (r *static[T]) runPriority(ctx context.Context) {
 		return
 	}
 
-	pq := &PriorityQueue[any]{}
+	pq := &PriorityQueue[T]{}
 	// Populate the priority queue with jobs
 	for _, j := range r.jobs {
 		if j == nil {
@@ -238,7 +238,7 @@ func (r *static[T]) runPriority(ctx context.Context) {
 		// Pop the highest priority job
 		job := pq.Pop()
 
-		job.(*PriorityJob[any]).Run(ctx) // Execute the job
+		job.(*PriorityJob[T]).Run(ctx) // Execute the job
 		r.incrementCompletedJobs()
 	}
 
