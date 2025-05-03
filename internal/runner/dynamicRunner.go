@@ -188,8 +188,8 @@ type dynamic[T any] struct {
 	mu        *sync.Mutex          // mu is the mutex for updating job status
 	callback  func(Processable[T]) // callback function to be invoked after each job execution, can be nil
 
-	completedJobs int // completedJobs is the number of jobs completed. complete happens regardless of error
-	totalJobs     int // totalJobs is the total number of jobs in the runner
+	completedJobs int32 // completedJobs is the number of jobs completed. complete happens regardless of error
+	totalJobs     int32 // totalJobs is the total number of jobs in the runner
 }
 
 // NewDynamicRunner creates a new job runner with the specified execution strategy and an optional callback function.
@@ -241,15 +241,33 @@ func clampWorkers(workers int) int {
 
 // AddJob implements Runnable.
 func (r *dynamic[T]) AddJob(j Processable[T]) error {
-	defer func() {
-		if r := recover(); r != nil {
-			fmt.Errorf("runner is closed, cannot accept new jobs")
-		}
-	}()
 
-	r.jobs <- j
-	r.incrementTotalJobs()
-	return nil
+	maxRetries := 5                     // Maximum number of retries
+	baseDelay := 100 * time.Millisecond // Base delay for retries
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		select {
+		case r.jobs <- j: // Successfully added the job
+			r.incrementTotalJobs()
+			return nil
+		default: // Channel is either full or closed
+			// Check if the channel is closed
+			select {
+			case <-r.jobs: // Attempt to read from the channel
+				return fmt.Errorf("runner is closed, cannot accept new jobs")
+			default: // If the channel is not closed, it's full
+				if attempt == maxRetries {
+					return fmt.Errorf("job queue is full, cannot accept new jobs after %d retries", maxRetries)
+				}
+				// Calculate logarithmic delay
+				delay := time.Duration(math.Log(float64(attempt)+1)) * baseDelay
+				fmt.Printf("Retrying to add job after %v (attempt %d/%d)\n", delay, attempt, maxRetries)
+				time.Sleep(delay) // Wait before retrying
+			}
+		}
+	}
+
+	return fmt.Errorf("unexpected error: failed to add job")
 }
 
 // CheckProgress implements Runnable.
@@ -299,11 +317,11 @@ func (r *dynamic[T]) runParallel(ctx context.Context) {
 		r.wg.Add(1)
 
 		go func(workerID int) {
+			defer r.wg.Done() // Ensure Done is called when the worker exits
 			for {
 				select {
 				case j, ok := <-r.jobs:
 					if !ok {
-						r.wg.Done()
 						return // Channel closed, stop worker
 					}
 					_, err := j.Run(ctx)
@@ -315,6 +333,9 @@ func (r *dynamic[T]) runParallel(ctx context.Context) {
 					}
 
 					r.incrementCompletedJobs()
+				case <-time.After(10 * time.Second):
+					fmt.Printf("Worker %d waiting for work\n", workerID)
+					continue // Worker is idle, continue waiting for jobs
 				}
 			}
 		}(i)
@@ -522,9 +543,7 @@ func (r *dynamic[T]) runSequential(ctx context.Context) {
 // Notes:
 // - This method uses a mutex to ensure safe access to the completedJobs counter.
 func (r *dynamic[T]) incrementCompletedJobs() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.completedJobs++
+	atomic.AddInt32(&r.completedJobs, 1)
 }
 
 // incrementTotalJobs increments the count of total jobs in a thread-safe manner.
@@ -532,30 +551,38 @@ func (r *dynamic[T]) incrementCompletedJobs() {
 // Notes:
 // - This method uses a mutex to ensure safe access to the totalJobs counter.
 func (r *dynamic[T]) incrementTotalJobs() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.totalJobs++
+	atomic.AddInt32(&r.totalJobs, 1)
 }
 
-func (r *dynamic[T]) Shutdown() {
+func (r *dynamic[T]) ShutdownGracefully() {
+    ctx, cancel := context.WithTimeout(context.Background(), r.maxWaitForClose)
+    defer cancel()
 
-	r.closeOnce.Do(func() {
-		close(r.jobs) // Close the channel safely
-	})
+    done := make(chan struct{})
+    go func() {
+        r.wg.Wait() // Wait for all workers to finish processing
+        close(done) // Signal that all workers are done
+    }()
 
-	ctx, cancel := context.WithTimeout(context.Background(), r.maxWaitForClose)
-	defer cancel()
+    select {
+    case <-done:
+        fmt.Println("All workers shut down gracefully")
+        r.closeOnce.Do(func() {
+            close(r.jobs) // Close the channel safely
+        })
+    case <-ctx.Done():
+        fmt.Println("Graceful shutdown timed out, forcing exit")
+        r.closeOnce.Do(func() {
+            close(r.jobs) // Close the channel safely
+        })
+    }
+}
 
-	done := make(chan struct{})
-	go func() {
-		r.wg.Wait() // Wait for all workers to finish processing
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		fmt.Println("All workers shut down gracefully")
-	case <-ctx.Done():
-		fmt.Println("Shutdown timed out, forcing exit")
-	}
+func (r *dynamic[T]) ShutdownImmediately() {
+    fmt.Println("Forcing immediate shutdown")
+    r.closeOnce.Do(func() {
+        close(r.jobs) // Close the channel immediately
+    })
+    r.wg.Wait() // Wait for workers to exit
+    fmt.Println("All workers exited")
 }

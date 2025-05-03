@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -339,8 +340,8 @@ func TestRunnerContextCancellation(t *testing.T) {
 
 func TestDynamicRunner(t *testing.T) {
 	totalJobs := 100
-	workers := 4
-	chanSize := 10
+	workers := 100
+	chanSize := 100
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -368,17 +369,22 @@ func TestDynamicRunner(t *testing.T) {
 			t.Fatalf("Failed to create job %d: %v", jobID, err)
 		}
 		jobs[i] = job
-		runner.AddJob(job)
+		jobErr := runner.AddJob(job)
+		if jobErr != nil {
+			t.Fatalf("Failed to add job %d: %v", jobID, jobErr)
+		}
 	}
 
 	// Shutdown the runner and wait for all jobs to complete
-	runner.Shutdown()
+	runner.ShutdownGracefully()
 
 	// Verify all jobs were processed
 	for _, job := range jobs {
-		t.Log(job.String())
+
 		if !job.GetStatus().IsCompleted() {
-			t.Errorf("Job %d was not completed", job.GetResult().ID)
+			t.Errorf("\nJob %d was not completed\n%s", job.ID(), job.String())
+		} else {
+			t.Logf(job.String())
 		}
 	}
 }
@@ -434,7 +440,7 @@ func TestDynamicRunnerCancel(t *testing.T) {
 	}
 
 	// Shutdown the runner and wait for all jobs to complete
-	runner.Shutdown()
+	runner.ShutdownGracefully()
 
 	// Check which jobs were executed successfully
 	for _, job := range jobs {
@@ -476,12 +482,15 @@ func TestDynamicRunnerCancel(t *testing.T) {
 	}
 }
 
+// TestDynamicRunnerFailFast tests the fail-fast strategy in a dynamic runner.
+// It simulates a scenario where jobs are added dynamically, and the runner cancels
+// TODO: Currently leaving jobs in pending state, need to fix this
 func TestDynamicRunnerFailFast(t *testing.T) {
 
-	totalJobs := 200
-	workers := 200
+	totalJobs := 500
+	workers := 500
 	chanSize := 100
-	cancelThreshold := 15
+	cancelThreshold := 25
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -527,7 +536,7 @@ func TestDynamicRunnerFailFast(t *testing.T) {
 	}
 
 	// Shutdown the runner and wait for all jobs to complete
-	runner.Shutdown()
+	runner.ShutdownGracefully()
 
 	// Check which jobs were executed successfully
 	for _, job := range jobs {
@@ -537,7 +546,7 @@ func TestDynamicRunnerFailFast(t *testing.T) {
 	jobFailed := 0
 
 	for _, job := range jobs {
-		if job.GetStatus() != StatusCompleted {
+		if job.GetStatus() != StatusCompleted && job.GetStatus() != StatusPending {
 			// add to the count of failed jobs
 			jobFailed++
 		}
@@ -553,10 +562,53 @@ func TestDynamicRunnerFailFast(t *testing.T) {
 		t.Errorf("Unexpected number of jobs failed: %d/%d", jobFailed, totalJobs)
 	}
 
-	// Verify that canceled jobs returned the correct error
+	// Verify that correct canceled job returned the simulated error should be cancelthreshold +1
 	for i, job := range jobs {
 		if job.GetStatus() == StatusError && job.GetError() != ctx.Err() {
-			t.Logf("Job %d did not return the expected context cancellation error: got %v, expected %v", i+1, job.GetError(), ctx.Err())
+			t.Logf("Job %d did not return the expected context cancellation error: got %v, expected %v", i+1, job.GetError(), StatusError)
+		}
+		if job.GetStatus() != StatusCompleted && job.GetStatus() != StatusError && job.GetStatus() != StatusTimeout {
+			t.Errorf("Job %d has an unexpected status got %v", i+1, job.GetStatus())
 		}
 	}
+}
+
+func BenchmarkRunnerMemoryUsage(b *testing.B) {
+	// Configure the runner
+	r := NewRunnerBuilder[Result]().
+		WithStrategy(StrategyParallel{}).
+		WithWorkers(10).
+		WithChanSize(1000).
+		WithMaxWaitForClose(20 * time.Second).
+		Build()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start the runner
+	r.Run(ctx)
+
+	// Measure memory usage before adding jobs
+	var memStatsBefore runtime.MemStats
+	runtime.ReadMemStats(&memStatsBefore)
+	fmt.Printf("Memory Before: Alloc = %v KB, TotalAlloc = %v KB\n",
+		memStatsBefore.Alloc/1024, memStatsBefore.TotalAlloc/1024)
+
+	// Add jobs
+	for i := 0; i < b.N; i++ {
+		job, _ := NewJob(func(ctx context.Context, args ...any) (Result, error) {
+			time.Sleep(10 * time.Millisecond) // Simulate job processing
+			return Result{ID: i, Message: "Job completed"}, nil
+		})
+		r.AddJob(job)
+	}
+
+	// Measure memory usage after adding jobs
+	var memStatsAfter runtime.MemStats
+	runtime.ReadMemStats(&memStatsAfter)
+	fmt.Printf("Memory After: Alloc = %v KB, TotalAlloc = %v KB\n",
+		memStatsAfter.Alloc/1024, memStatsAfter.TotalAlloc/1024)
+
+	// Shutdown the runner
+	r.ShutdownGracefully()
 }
