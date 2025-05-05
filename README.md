@@ -75,7 +75,12 @@ For questions or support, please contact [gpgardner@yahoo.com]
 
 ## Helpful Commands
 ```bash
-go test -race -timeout 30s -run '^(TestNewJobBase|TestJobWithError_Run_Success|TestJobWithError_Run_Error|TestJobWithError_Run_Timeout|TestJobWithResult_Run_Success|TestJobWithResult_Run_Error|TestJobWithResult_Run_Timeout)$' GOTAS/internal/job > race_test_output.txt 2>&1  
+go test -v -race -timeout 30s -run ./... > runner_race_test_output.txt 2>&1
 
-go test -race -timeout 30s -run '^(TestRunnerParallelExecution|TestRunnerProgress|TestRunnerSequentialExecution|TestRunnerContextCancellation|TestDynamicRunner|TestDynamicRunnerCancel|TestDynamicRunnerFailFast|TestRunnerGracefulShutdownTimeout)$' GOTAS/internal/runner > runner_race_test_output.txt 2>&1
+go test -bench=. -benchmem -cpuprofile=cpu.out -memprofile=mem.out
+go tool pprof cpu.out
+ > top
+go tool pprof mem.out
+ > top
+
 ```
