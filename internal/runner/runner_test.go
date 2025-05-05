@@ -641,23 +641,22 @@ func TestRunnerGracefulShutdownTimeout(t *testing.T) {
 }
 
 func BenchmarkRunnerMemoryUsage(b *testing.B) {
+	// Configure the runner
+	r := NewRunnerBuilder[Result]().
+		WithStrategy(StrategyParallel{}).
+		WithWorkers(100).
+		WithChanSize(100).
+		WithMaxWaitForClose(20 * time.Second).
+		Build()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start the runner
+	r.Run(ctx)
 
 	// Add jobs
 	for i := 0; i < b.N; i++ {
-
-		// Configure the runner
-		r := NewRunnerBuilder[Result]().
-			WithStrategy(StrategyParallel{}).
-			WithWorkers(100).
-			WithChanSize(1000).
-			WithMaxWaitForClose(20 * time.Second).
-			Build()
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		// Start the runner
-		r.Run(ctx)
 
 		// Measure memory usage before adding jobs
 		var memStatsBefore runtime.MemStats
@@ -671,9 +670,9 @@ func BenchmarkRunnerMemoryUsage(b *testing.B) {
 		})
 		r.AddJob(job)
 
-		// Shutdown the runner
-		r.ShutdownGracefully(cancel)
 	}
+	// Shutdown the runner
+	r.ShutdownGracefully(cancel)
 
 	// Measure memory usage after adding jobs
 	var memStatsAfter runtime.MemStats
