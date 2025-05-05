@@ -246,7 +246,7 @@ func (r *dynamic[T]) AddJob(j Processable[T]) error {
 	for {
 		select {
 		case r.jobs <- j: // Successfully added the job
-			fmt.Printf("Job added to queue: %v\n", j)
+			// fmt.Printf("Job added to queue: %v\n", j)
 			r.incrementTotalJobs()
 			return nil
 		default: // Channel is either full or closed
@@ -273,18 +273,18 @@ func isChannelClosed[T any](ch <-chan T) bool {
 
 // CheckProgress implements Runnable.
 func (r *dynamic[T]) CheckProgress() float64 {
+	totalJobs := atomic.LoadInt32(&r.totalJobs)         // Use atomic for reading
+	completedJobs := atomic.LoadInt32(&r.completedJobs) // Use atomic for reading
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.totalJobs == 0 {
+	if totalJobs == 0 {
 		return 0.0 // Avoid division by zero
 	}
-	if r.completedJobs < 0 {
-		r.completedJobs = 0 // Ensure completed jobs is not negative
+	if completedJobs < 0 {
+		completedJobs = 0 // Ensure completed jobs is not negative
 	}
-	// Calculate progress as a percentage
-	progress := (float64(r.completedJobs) / float64(r.totalJobs)) * 100
 
+	// Calculate progress as a percentage
+	progress := (float64(completedJobs) / float64(totalJobs)) * 100
 	return math.Round(progress*100) / 100
 }
 
@@ -324,9 +324,9 @@ func (r *dynamic[T]) runParallel(ctx context.Context) {
 				select {
 				case j, ok := <-r.jobs:
 					if j != nil {
-						fmt.Printf("Worker %d working job %+v\n", workerID, j)
+						// fmt.Printf("Worker %d working job %+v\n", workerID, j)
 					} else {
-						fmt.Printf("Worker %d received nil job\n", workerID)
+						// fmt.Printf("Worker %d received nil job\n", workerID)
 					}
 
 					if !ok {
@@ -339,13 +339,13 @@ func (r *dynamic[T]) runParallel(ctx context.Context) {
 						r.callback(j)
 					}
 					if err != nil {
-						fmt.Printf("Worker %d encountered error: %v\n", workerID, err)
+						// fmt.Printf("Worker %d encountered error: %v\n", workerID, err)
 						continue
 					}
 
 					r.incrementCompletedJobs()
 				case <-time.After(10 * time.Second):
-					fmt.Printf("Worker %d waiting for work\n", workerID)
+					// fmt.Printf("Worker %d waiting for work\n", workerID)
 					continue // Worker is idle, continue waiting for jobs
 				}
 			}

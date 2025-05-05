@@ -47,6 +47,7 @@ func (j *Job[T]) Run(ctx context.Context, args ...any) (T, error) {
 		j.setResultEmpty()
 		j.Complete(StatusTimeout)
 	} else if err != nil {
+		j.setError(err)
 		j.setResultEmpty()
 		j.Complete(StatusError)
 	} else {

@@ -98,7 +98,7 @@ func TestRunnerParallelExecution(t *testing.T) {
 				t.Errorf("Job %d result is nil", i)
 			}
 
-			t.Log(j.String())
+			// t.Log(j.String())
 		}
 
 	case <-time.After(5 * time.Second):
@@ -195,9 +195,9 @@ func TestRunnerProgress(t *testing.T) {
 		t.Errorf("Expected progress to be 100.0, got %f", finalProgress)
 	}
 
-	for _, job := range jobs {
-		t.Log(job.String())
-	}
+	// for _, job := range jobs {
+	// 	t.Log(job.String())
+	// }
 }
 
 func TestRunnerSequentialExecution(t *testing.T) {
@@ -275,7 +275,7 @@ func TestRunnerSequentialExecution(t *testing.T) {
 			t.Errorf("Job %d result mismatch: got %+v", i+1, result)
 		}
 
-		t.Log(job.String())
+		// t.Log(job.String())
 	}
 }
 
@@ -334,7 +334,7 @@ func TestRunnerContextCancellation(t *testing.T) {
 			t.Errorf("Job %d did not return the expected context cancellation error: got %v, expected %v", i+1, job.GetError(), ctx.Err())
 		}
 
-		t.Log(job.String())
+		// t.Log(job.String())
 	}
 }
 
@@ -384,7 +384,7 @@ func TestDynamicRunner(t *testing.T) {
 		if !job.GetStatus().IsCompleted() {
 			t.Errorf("\nJob %d was not completed\n%s", job.GetID(), job.String())
 		} else {
-			t.Log(job.String())
+			// t.Log(job.String())
 		}
 	}
 }
@@ -442,10 +442,10 @@ func TestDynamicRunnerCancel(t *testing.T) {
 	// Shutdown the runner and wait for all jobs to complete
 	runner.ShutdownGracefully(cancel)
 
-	// Check which jobs were executed successfully
-	for _, job := range jobs {
-		t.Log(job.String())
-	}
+	// // Check which jobs were executed successfully
+	// for _, job := range jobs {
+	// 	t.Log(job.String())
+	// }
 
 	totalSuccess := 0
 	for _, job := range jobs {
@@ -543,9 +543,9 @@ func TestDynamicRunnerFailFast(t *testing.T) {
 	runner.ShutdownGracefully(cancel)
 
 	// Check which jobs were executed successfully
-	for _, job := range jobs {
-		t.Log(job.String())
-	}
+	// for _, job := range jobs {
+	// 	t.Log(job.String())
+	// }
 
 	jobFailed := 0
 
@@ -571,7 +571,7 @@ func TestDynamicRunnerFailFast(t *testing.T) {
 			t.Logf("Job %d did not return the expected context cancellation error: got %v, expected %v", i+1, job.GetError(), StatusError)
 		}
 		if job.GetStatus() != StatusCompleted && job.GetStatus() != StatusError && job.GetStatus() != StatusTimeout {
-			t.Log(job.String())
+			// t.Log(job.String())
 			t.Errorf("Job %d has an unexpected status got %v", i+1, job.GetStatus())
 		}
 	}
@@ -633,7 +633,7 @@ func TestRunnerGracefulShutdownTimeout(t *testing.T) {
 	// Verify that some jobs are still pending
 	for i, job := range jobs {
 		// t.Log("\n")
-		t.Log(job.String())
+		// t.Log(job.String())
 		if job.GetStatus() == StatusPending {
 			t.Errorf("Job %d is still pending", i)
 		}
@@ -680,4 +680,140 @@ func BenchmarkRunnerMemoryUsage(b *testing.B) {
 	runtime.ReadMemStats(&memStatsAfter)
 	fmt.Printf("Memory After: Alloc = %v KB, TotalAlloc = %v KB\n",
 		memStatsAfter.Alloc/1024, memStatsAfter.TotalAlloc/1024)
+}
+
+func TestRunnerMemoryLeak(t *testing.T) {
+	// Configure the runner
+	r := NewRunnerBuilder[Result]().
+		WithStrategy(StrategyParallel{}).
+		WithWorkers(50).
+		WithChanSize(500).
+		WithMaxWaitForClose(10 * time.Second).
+		Build()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start the runner
+	r.Run(ctx)
+
+	// Measure memory usage before adding jobs
+	var memStatsBefore runtime.MemStats
+	runtime.ReadMemStats(&memStatsBefore)
+	t.Logf("Memory Before: Alloc = %v KB, TotalAlloc = %v KB",
+		memStatsBefore.Alloc/1024, memStatsBefore.TotalAlloc/1024)
+
+	// Add jobs
+	for i := 0; i < 100; i++ {
+		job, _ := NewJob(func(ctx context.Context, args ...any) (Result, error) {
+			time.Sleep(5 * time.Millisecond) // Simulate job processing
+			return Result{ID: i, Message: "Job completed"}, nil
+		})
+		r.AddJob(job)
+	}
+
+	// Shutdown the runner
+	r.ShutdownGracefully(cancel)
+
+	// Measure memory usage after adding jobs
+	var memStatsAfter runtime.MemStats
+	runtime.ReadMemStats(&memStatsAfter)
+	t.Logf("Memory After: Alloc = %v KB, TotalAlloc = %v KB",
+		memStatsAfter.Alloc/1024, memStatsAfter.TotalAlloc/1024)
+
+	// Check for memory leaks
+	if memStatsAfter.Alloc > memStatsBefore.Alloc*2 {
+		t.Errorf("Potential memory leak detected: Alloc increased from %v KB to %v KB",
+			memStatsBefore.Alloc/1024, memStatsAfter.Alloc/1024)
+	}
+}
+
+func TestRunnerHighConcurrency(t *testing.T) {
+	// Configure the runner
+	r := NewRunnerBuilder[Result]().
+		WithStrategy(StrategyParallel{}).
+		WithWorkers(500).
+		WithChanSize(2000).
+		WithMaxWaitForClose(30 * time.Second).
+		Build()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start the runner
+	r.Run(ctx)
+
+	// Add a large number of jobs
+	numJobs := 10000
+	jobs := make([]*Job[Result], numJobs)
+	for i := 0; i < numJobs; i++ {
+		job, _ := NewJob(func(ctx context.Context, args ...any) (Result, error) {
+			time.Sleep(1 * time.Millisecond) // Simulate job processing
+			return Result{ID: i, Message: "Job completed"}, nil
+		})
+		jobs[i] = job
+		r.AddJob(job)
+	}
+
+	// Shutdown the runner
+	r.ShutdownGracefully(cancel)
+
+	// Verify all jobs completed
+	for i, job := range jobs {
+		if job.GetStatus() != StatusCompleted {
+			t.Log(job.String())
+			t.Errorf("Job %d did not complete successfully", i)
+		}
+	}
+}
+
+func TestRunnerProgressAccuracy(t *testing.T) {
+	// Configure the runner
+	r := NewRunnerBuilder[Result]().
+		WithStrategy(StrategySequential{}).
+		WithWorkers(1).
+		WithChanSize(10).
+		WithMaxWaitForClose(10 * time.Second).
+		Build()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start the runner
+	r.Run(ctx)
+
+	// Add jobs
+	numJobs := 10
+	for i := 0; i < numJobs; i++ {
+		job, _ := NewJob(func(ctx context.Context, args ...any) (Result, error) {
+			time.Sleep(50 * time.Millisecond) // Simulate job processing
+			return Result{ID: i, Message: "Job completed"}, nil
+		})
+		r.AddJob(job)
+	}
+
+	// Monitor progress
+	progressChan := make(chan float64)
+	go func() {
+		for {
+			progress := r.CheckProgress()
+			progressChan <- progress
+			if progress >= 100.0 {
+				close(progressChan)
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+
+	// Verify progress updates
+	for progress := range progressChan {
+		t.Logf("Progress: %.2f%%", progress)
+		if progress < 0 || progress > 100 {
+			t.Errorf("Invalid progress value: %.2f%%", progress)
+		}
+	}
+
+	// Shutdown the runner
+	r.ShutdownGracefully(cancel)
 }
