@@ -165,7 +165,6 @@ func (b *RunnerBuilder[T]) Build() *dynamic[T] {
 		chanSize:      b.chanSize,
 		jobs:          make(chan Processable[T], b.chanSize),
 		wg:            &sync.WaitGroup{},
-		mu:            &sync.Mutex{},
 		callback:      b.callback,
 		completedJobs: 0,
 		totalJobs:     0,
@@ -185,7 +184,6 @@ type dynamic[T any] struct {
 	closeOnce sync.Once            // Ensures the channel is closed only once
 	jobs      chan Processable[T]  // jobs is the list of jobs to be executed
 	wg        *sync.WaitGroup      // wg is the wait group for tracking job completion
-	mu        *sync.Mutex          // mu is the mutex for updating job status
 	callback  func(Processable[T]) // callback function to be invoked after each job execution, can be nil
 
 	completedJobs int32 // completedJobs is the number of jobs completed. complete happens regardless of error
@@ -209,7 +207,6 @@ func NewDynamicRunner[T any](strategy DynamicStrategy, callback func(Processable
 		maxWaitForClose: DefaultMaxWaitForClose,              // maximum wait time for the runner to close gracefully
 		jobs:            make(chan Processable[T], chanSize), // Buffered channel to hold jobs, can be adjusted based on requirements
 		wg:              &sync.WaitGroup{},
-		mu:              &sync.Mutex{},
 		callback:        callback,
 		completedJobs:   0,
 		totalJobs:       0,
@@ -552,7 +549,7 @@ func (r *dynamic[T]) runSequential(ctx context.Context) {
 // incrementCompletedJobs increments the count of completed jobs in a thread-safe manner.
 //
 // Notes:
-// - This method uses a mutex to ensure safe access to the completedJobs counter.
+// - This method uses atomic to ensure safe access to the completedJobs counter.
 func (r *dynamic[T]) incrementCompletedJobs() {
 	atomic.AddInt32(&r.completedJobs, 1)
 }
@@ -560,7 +557,7 @@ func (r *dynamic[T]) incrementCompletedJobs() {
 // incrementTotalJobs increments the count of total jobs in a thread-safe manner.
 //
 // Notes:
-// - This method uses a mutex to ensure safe access to the totalJobs counter.
+// - This method uses atomic to ensure safe access to the totalJobs counter.
 func (r *dynamic[T]) incrementTotalJobs() {
 	atomic.AddInt32(&r.totalJobs, 1)
 }
