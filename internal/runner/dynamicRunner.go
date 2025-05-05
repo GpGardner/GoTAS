@@ -241,33 +241,34 @@ func clampWorkers(workers int) int {
 
 // AddJob implements Runnable.
 func (r *dynamic[T]) AddJob(j Processable[T]) error {
-
-	maxRetries := 5                     // Maximum number of retries
 	baseDelay := 100 * time.Millisecond // Base delay for retries
 
-	for attempt := 1; attempt <= maxRetries; attempt++ {
+	for {
 		select {
 		case r.jobs <- j: // Successfully added the job
+			//fmt.Printf("Job added to queue: %v\n", j)
 			r.incrementTotalJobs()
 			return nil
 		default: // Channel is either full or closed
 			// Check if the channel is closed
-			select {
-			case <-r.jobs: // Attempt to read from the channel
+			if isChannelClosed(r.jobs) {
 				return fmt.Errorf("runner is closed, cannot accept new jobs")
-			default: // If the channel is not closed, it's full
-				if attempt == maxRetries {
-					return fmt.Errorf("job queue is full, cannot accept new jobs after %d retries", maxRetries)
-				}
-				// Calculate logarithmic delay
-				delay := time.Duration(math.Log(float64(attempt)+1)) * baseDelay
-				fmt.Printf("Retrying to add job after %v (attempt %d/%d)\n", delay, attempt, maxRetries)
-				time.Sleep(delay) // Wait before retrying
 			}
+
+			//fmt.Printf("Job queue is full, retrying in %v...\n", baseDelay)
+			time.Sleep(baseDelay) // Wait before retrying
 		}
 	}
+}
 
-	return fmt.Errorf("unexpected error: failed to add job")
+// Helper function to check if a channel is closed
+func isChannelClosed[T any](ch <-chan T) bool {
+	select {
+	case _, ok := <-ch:
+		return !ok // If `ok` is false, the channel is closed
+	default:
+		return false // Channel is not closed
+	}
 }
 
 // CheckProgress implements Runnable.
@@ -322,8 +323,10 @@ func (r *dynamic[T]) runParallel(ctx context.Context) {
 				select {
 				case j, ok := <-r.jobs:
 					if !ok {
+						//fmt.Printf("Worker %d shutting down\n", workerID)
 						return // Channel closed, stop worker
 					}
+					//fmt.Printf("Worker %d working job %+v\n", workerID, j)
 					_, err := j.Run(ctx)
 					if r.callback != nil {
 						r.callback(j)
@@ -334,7 +337,7 @@ func (r *dynamic[T]) runParallel(ctx context.Context) {
 
 					r.incrementCompletedJobs()
 				case <-time.After(10 * time.Second):
-					fmt.Printf("Worker %d waiting for work\n", workerID)
+					//fmt.Printf("Worker %d waiting for work\n", workerID)
 					continue // Worker is idle, continue waiting for jobs
 				}
 			}
@@ -484,7 +487,7 @@ func (r *dynamic[T]) runFailFast(ctx context.Context) {
 						}
 
 						if err != nil {
-							// Set the error state and stop all workers
+							//fmt.Printf("Worker %d encountered error on job: %v\n", workerID, err)
 							atomic.StoreInt32(&errState, 1)
 						}
 					}
@@ -554,35 +557,64 @@ func (r *dynamic[T]) incrementTotalJobs() {
 	atomic.AddInt32(&r.totalJobs, 1)
 }
 
-func (r *dynamic[T]) ShutdownGracefully() {
-    ctx, cancel := context.WithTimeout(context.Background(), r.maxWaitForClose)
-    defer cancel()
+// func (r *dynamic[T]) ShutdownGracefully(cancel context.CancelFunc) {
+// 	// Close the jobs channel to signal no more jobs will be added
+// 	r.closeOnce.Do(func() {
+// 		close(r.jobs)
+// 	})
 
-    done := make(chan struct{})
-    go func() {
-        r.wg.Wait() // Wait for all workers to finish processing
-        close(done) // Signal that all workers are done
-    }()
+// 	// Wait for all workers to finish processing
+// 	done := make(chan struct{})
+// 	 r.closeOnce.Do(func() {
+//         close(r.jobs) // Close the jobs channel to signal no more jobs will be added
+//         r.wg.Wait()   // Wait for all workers to finish processing
+//     })
 
-    select {
-    case <-done:
-        fmt.Println("All workers shut down gracefully")
-        r.closeOnce.Do(func() {
-            close(r.jobs) // Close the channel safely
-        })
-    case <-ctx.Done():
-        fmt.Println("Graceful shutdown timed out, forcing exit")
-        r.closeOnce.Do(func() {
-            close(r.jobs) // Close the channel safely
-        })
-    }
+// 	select {
+// 	case <-done:
+// 		fmt.Println("All workers shut down gracefully")
+// 	case <-time.After(r.maxWaitForClose):
+// 		cancel() // Cancel the context to stop all workers
+// 	}
+// }
+
+func (r *dynamic[T]) ShutdownGracefully(cancel context.CancelFunc) {
+	r.closeOnce.Do(func() {
+		close(r.jobs) // Close the jobs channel to signal no more jobs will be added
+	})
+
+	// Wait for the queue to be fully drained
+	for {
+		remainingJobs := len(r.jobs)
+		if remainingJobs == 0 {
+			break
+		}
+		//fmt.Printf("jobs remaining in the queue %d, waiting for workers to finish\n", remainingJobs)
+		time.Sleep(10 * time.Millisecond) // Polling interval
+	}
+
+	// Wait for all workers to finish processing
+	done := make(chan struct{})
+	go func() {
+		r.wg.Wait() // Wait for all workers to finish
+		close(done)
+	}()
+
+	// Wait for workers to finish or timeout
+	select {
+	case <-done:
+		//fmt.Println("All workers shut down gracefully")
+	case <-time.After(r.maxWaitForClose):
+		//fmt.Println("Graceful shutdown timed out")
+		cancel() // Cancel the context to forcefully stop workers
+	}
 }
 
 func (r *dynamic[T]) ShutdownImmediately() {
-    fmt.Println("Forcing immediate shutdown")
-    r.closeOnce.Do(func() {
-        close(r.jobs) // Close the channel immediately
-    })
-    r.wg.Wait() // Wait for workers to exit
-    fmt.Println("All workers exited")
+	//fmt.Println("Forcing immediate shutdown")
+	r.closeOnce.Do(func() {
+		close(r.jobs) // Close the channel immediately
+	})
+	r.wg.Wait() // Wait for workers to exit
+	//fmt.Println("All workers exited")
 }

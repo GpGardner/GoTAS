@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type Processable[T any] interface {
@@ -15,6 +17,7 @@ type Processable[T any] interface {
 	GetDuration() time.Duration                      // Returns execution time
 	CreatedAt() time.Time                            // Returns the time the job was created
 	CompletedAt() time.Time                          // Returns the time the job was completed
+	GetID() uuid.UUID                                // Returns the unique identifier of the job
 }
 
 // make sure Job implements Processable interface
@@ -29,33 +32,26 @@ type Job[T any] struct {
 
 func (j *Job[T]) Run(ctx context.Context, args ...any) (T, error) {
 	j.start()
+
 	//Check that ctx isnt already complete
 	if ctx.Err() != nil {
-		j.error = ctx.Err()
+		j.setError(ctx.Err())
 		j.result = *new(T) // Reset result to zero value
 		j.Complete(StatusTimeout)
 		return j.result, j.error
 	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		j.result, j.error = j.function(ctx, args...)
-	}()
 
-	select {
-	case <-ctx.Done():
-		j.error = ctx.Err()
-		j.result = *new(T) // Reset result to zero value
+	j.result, j.error = j.function(ctx, args...)
+	if ctx.Err() != nil {
+		j.setError(ctx.Err())
+		j.result = *new(T)
 		j.Complete(StatusTimeout)
-		return j.result, j.error
-	case <-done:
-		if j.error != nil {
-			j.Complete(StatusError)
-		} else {
-			j.Complete(StatusCompleted)
-		}
-		return j.result, j.error
+	} else if j.error != nil {
+		j.Complete(StatusError)
+	} else {
+		j.Complete(StatusCompleted)
 	}
+	return j.result, j.error
 }
 
 // NewJobWithResult creates a new JobWithResult instance.
@@ -84,45 +80,61 @@ func NewJob[T any](f func(ctx context.Context, args ...any) (T, error)) (*Job[T]
 
 // Complete marks the job as completed
 func (j *Job[T]) Complete(status Status) {
-	completeJob(j.jobBase, status)
+	j.jobBase.completeJob(status)
 }
 
 // GetStatus returns the current job status
 func (j *Job[T]) GetStatus() Status {
-	return j.status
+	return j.jobBase.getStatus()
 }
 
 // GetError returns the job error (if any)
 func (j *Job[T]) GetError() error {
-	return j.error
+	return j.jobBase.getError()
 }
 
 // GetResult returns the job result (if applicable)
 func (j *Job[T]) GetResult() T {
+	j.mu.Lock()
+	defer j.mu.Unlock()
 	return j.result
 }
 
 // GetDuration returns the execution time
 func (j *Job[T]) GetDuration() time.Duration {
-	return j.duration
+	return j.jobBase.getDuration()
 }
 
 // CreatedAt returns the time the job was created
 // default time if nil
 func (j *Job[T]) CreatedAt() time.Time {
-	return j.jobBase.CreatedAt()
+	if j.jobBase.getCreatedAt() == nil {
+		return time.Time{}
+	}
+	return *j.jobBase.getCreatedAt()
 }
 
 // StartedAt returns the time the job was started
 // default time if nil
 func (j *Job[T]) StartedAt() time.Time {
-	return j.jobBase.StartedAt()
+	// If the job has not started yet, set default time
+	if j.jobBase.getStartedAt() == nil {
+		return time.Time{}
+	}
+	return *j.jobBase.getStartedAt()
 }
 
 // CompletedAt returns the time the job was completed
 // default time if nil
 func (j *Job[T]) CompletedAt() time.Time {
-	return j.jobBase.CompletedAt()
+	if j.jobBase.getCompletedAt() == nil {
+		return time.Time{}
+	}
+	return *j.jobBase.getCompletedAt()
+}
+
+func (j *Job[T]) GetID() uuid.UUID {
+	return j.jobBase.getID()
 }
 
 // String returns a human-readable string representation of the Job instance.
@@ -132,7 +144,7 @@ func (j *Job[T]) CompletedAt() time.Time {
 func (j *Job[T]) String() string {
 	return fmt.Sprintf(
 		"\nJob[ID=%d,\n Status=%s,\n CreatedAt=%s,\n Start=%s,\n CompletedAt=%s,\n Error=%v,\n Duration=%s\n]",
-		j.jobBase.ID(),
+		j.jobBase.getID(),
 		j.GetStatus(),
 		j.CreatedAt().Format(time.RFC3339),
 		j.StartedAt().Format(time.RFC3339),

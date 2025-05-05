@@ -15,15 +15,15 @@ func TestNewJobBase(t *testing.T) {
 		t.Errorf("expected no error, got %v", err)
 	}
 
-	if jb.ID() == uuid.Nil {
+	if jb.getID() == uuid.Nil {
 		t.Errorf("expected a valid UUID, got nil")
 	}
 
-	if jb.Status() != StatusPending {
-		t.Errorf("expected status to be StatusPending, got %v", jb.Status())
+	if jb.getStatus() != StatusPending {
+		t.Errorf("expected status to be StatusPending, got %v", jb.getStatus())
 	}
 
-	if jb.CreatedAt().IsZero() {
+	if jb.getCreatedAt().IsZero() {
 		t.Errorf("expected createdAt to be set, got zero value")
 	}
 }
@@ -48,8 +48,8 @@ func TestJobWithError_Run_Success(t *testing.T) {
 		t.Errorf("expected no error, got %v", err)
 	}
 
-	if j.Status() != StatusCompleted {
-		t.Errorf("expected status to be StatusCompleted, got %v", j.Status())
+	if j.GetStatus() != StatusCompleted {
+		t.Errorf("expected status to be StatusCompleted, got %v", j.GetStatus())
 	}
 
 	if j.CompletedAt().IsZero() {
@@ -77,8 +77,8 @@ func TestJobWithError_Run_Error(t *testing.T) {
 		t.Errorf("expected error %v, got %v", expectedErr, err)
 	}
 
-	if j.Status() != StatusError {
-		t.Errorf("expected status to be StatusError, got %v", j.Status())
+	if j.GetStatus() != StatusError {
+		t.Errorf("expected status to be StatusError, got %v", j.GetStatus())
 	}
 }
 
@@ -104,8 +104,8 @@ func TestJobWithError_Run_Timeout(t *testing.T) {
 		t.Errorf("expected error %v, got %v", context.DeadlineExceeded, err)
 	}
 
-	if j.Status() != StatusTimeout {
-		t.Errorf("expected status to be StatusTimeout, got %v", j.Status())
+	if j.GetStatus() != StatusTimeout {
+		t.Errorf("expected status to be StatusTimeout, got %v", j.GetStatus())
 	}
 }
 
@@ -134,8 +134,8 @@ func TestJobWithResult_Run_Success(t *testing.T) {
 		t.Errorf("expected result %v, got %v", expectedResult, result)
 	}
 
-	if j.Status() != StatusCompleted {
-		t.Errorf("expected status to be StatusCompleted, got %v", j.Status())
+	if j.GetStatus() != StatusCompleted {
+		t.Errorf("expected status to be StatusCompleted, got %v", j.GetStatus())
 	}
 }
 
@@ -164,8 +164,8 @@ func TestJobWithResult_Run_Error(t *testing.T) {
 		t.Errorf("expected result to be empty, got %v", result)
 	}
 
-	if j.Status() != StatusError {
-		t.Errorf("expected status to be StatusError, got %v", j.Status())
+	if j.GetStatus() != StatusError {
+		t.Errorf("expected status to be StatusError, got %v", j.GetStatus())
 	}
 }
 
@@ -196,7 +196,7 @@ func TestJobWithResult_Run_Timeout(t *testing.T) {
 		t.Errorf("expected result to be empty, got %v", result)
 	}
 
-	if j.Status() != StatusTimeout {
-		t.Errorf("expected status to be StatusTimeout, got %v", j.Status())
+	if j.GetStatus() != StatusTimeout {
+		t.Errorf("expected status to be StatusTimeout, got %v", j.GetStatus())
 	}
 }
