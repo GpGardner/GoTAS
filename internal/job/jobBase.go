@@ -9,6 +9,32 @@ import (
 	"github.com/google/uuid"
 )
 
+//Consider using a sync.Pool to manage timers for better performance
+// This pool can be used to reuse timers instead of creating new ones every time.
+// This can help reduce memory allocation and improve performance in high-load scenarios.
+
+// var timerPool = sync.Pool{
+//     New: func() interface{} {
+//         return time.NewTimer(0)
+//     },
+// }
+
+// func getTimer(d time.Duration) *time.Timer {
+//     t := timerPool.Get().(*time.Timer)
+//     if !t.Stop() {
+//         <-t.C
+//     }
+//     t.Reset(d)
+//     return t
+// }
+
+// func putTimer(t *time.Timer) {
+//     if !t.Stop() {
+//         <-t.C
+//     }
+//     timerPool.Put(t)
+// }
+
 type jobBase struct {
 	mu          sync.Mutex    // Mutex to protect concurrent access
 	id          uuid.UUID     // Unique identifier of the job
