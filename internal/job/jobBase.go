@@ -176,3 +176,15 @@ func (j *jobBase) setError(e error) {
 	defer j.mu.Unlock()
 	j.error = e
 }
+
+func (j *Job[T]) setResult(result T) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.result = result
+}
+
+func (j *Job[T]) setResultEmpty() {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.result = *new(T) // Reset result to zero value
+}

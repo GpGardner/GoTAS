@@ -384,7 +384,7 @@ func TestDynamicRunner(t *testing.T) {
 		if !job.GetStatus().IsCompleted() {
 			t.Errorf("\nJob %d was not completed\n%s", job.GetID(), job.String())
 		} else {
-			t.Logf(job.String())
+			t.Log(job.String())
 		}
 	}
 }
@@ -392,7 +392,7 @@ func TestDynamicRunner(t *testing.T) {
 func TestDynamicRunnerCancel(t *testing.T) {
 	totalJobs := 1000
 	workers := 100
-	chanSize := 5000
+	chanSize := 250
 	cancelThreshold := 500
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -413,7 +413,7 @@ func TestDynamicRunnerCancel(t *testing.T) {
 		}
 	}
 
-	runner := NewDynamicRunner[Result](StrategyParallel{}, callback, workers, chanSize)
+	runner := NewDynamicRunner(StrategyParallel{}, callback, workers, chanSize)
 	runner.Run(ctx)
 
 	jobs := make([]*Job[Result], totalJobs)
@@ -585,11 +585,11 @@ func TestRunnerGracefulShutdownTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// callback := func(job Processable[Result]) {
-    //     t.Logf("Callback invoked for job: %v, Status: %v", job, job.GetStatus())
-    // }
+	callback := func(job Processable[Result]) {
+		t.Logf("Callback invoked for job: %v, Status: %v", job, job.GetStatus())
+	}
 
-	runner := NewDynamicRunner[Result](StrategyParallel{}, nil, workers, chanSize)
+	runner := NewDynamicRunner(StrategyParallel{}, callback, workers, chanSize)
 	runner.Run(ctx)
 
 	jobs := make([]*Job[Result], totalJobs)
@@ -620,6 +620,7 @@ func TestRunnerGracefulShutdownTimeout(t *testing.T) {
 	go func() {
 		runner.ShutdownGracefully(cancel)
 		close(done)
+		t.Logf("Progress: %v percent", runner.CheckProgress())
 	}()
 
 	select {
@@ -631,7 +632,8 @@ func TestRunnerGracefulShutdownTimeout(t *testing.T) {
 
 	// Verify that some jobs are still pending
 	for i, job := range jobs {
-		// t.Log(job.String())
+		// t.Log("\n")
+		t.Log(job.String())
 		if job.GetStatus() == StatusPending {
 			t.Errorf("Job %d is still pending", i)
 		}

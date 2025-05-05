@@ -36,19 +36,21 @@ func (j *Job[T]) Run(ctx context.Context, args ...any) (T, error) {
 	//Check that ctx isnt already complete
 	if ctx.Err() != nil {
 		j.setError(ctx.Err())
-		j.result = *new(T) // Reset result to zero value
+		j.setResultEmpty()
 		j.Complete(StatusTimeout)
 		return j.result, j.error
 	}
 
-	j.result, j.error = j.function(ctx, args...)
+	result, err := j.function(ctx, args...)
 	if ctx.Err() != nil {
 		j.setError(ctx.Err())
-		j.result = *new(T)
+		j.setResultEmpty()
 		j.Complete(StatusTimeout)
-	} else if j.error != nil {
+	} else if err != nil {
+		j.setResultEmpty()
 		j.Complete(StatusError)
 	} else {
+		j.setResult(result)
 		j.Complete(StatusCompleted)
 	}
 	return j.result, j.error
