@@ -160,15 +160,18 @@ func (b *RunnerBuilder[T]) WithMaxWaitForClose(maxWait time.Duration) *RunnerBui
 // This creates a new dynamic runner for jobs with the specified configuration.
 func (b *RunnerBuilder[T]) Build() *dynamic[T] {
 	return &dynamic[T]{
-		strategy:      b.strategy,
-		workers:       b.workers,
-		chanSize:      b.chanSize,
-		jobs:          make(chan Processable[T], b.chanSize),
-		wg:            &sync.WaitGroup{},
-		callback:      b.callback,
-		completedJobs: 0,
-		totalJobs:     0,
-	}
+        strategy:        b.strategy,
+        workers:         b.workers,
+        chanSize:        b.chanSize,
+        maxRetries:      b.maxRetries,
+        backoff:         b.backoff,
+        maxWaitForClose: b.maxWaitForClose,
+        jobs:            make(chan Processable[T], b.chanSize),
+        wg:              &sync.WaitGroup{},
+        callback:        b.callback,
+        completedJobs:   0,
+        totalJobs:       0,
+    }
 }
 
 // dynamic represents a runner that executes jobs based on a strategy and can continuously run
@@ -330,6 +333,7 @@ func (r *dynamic[T]) runParallel(ctx context.Context) {
 						//fmt.Printf("Worker %d shutting down\n", workerID)
 						return // Channel closed, stop worker
 					}
+					fmt.Printf("Worker %d dequeued job: %v", workerID, j)
 
 					_, err := j.Run(ctx)
 					if r.callback != nil {
@@ -567,15 +571,15 @@ func (r *dynamic[T]) ShutdownGracefully(cancel context.CancelFunc) {
 		close(r.jobs) // Close the jobs channel to signal no more jobs will be added
 	})
 
-	// Wait for the queue to be fully drained
-	for {
-		remainingJobs := len(r.jobs)
-		if remainingJobs == 0 {
-			break
-		}
-		//fmt.Printf("jobs remaining in the queue %d, waiting for workers to finish\n", remainingJobs)
-		time.Sleep(10 * time.Millisecond) // Polling interval
-	}
+	// // Wait for the queue to be fully drained
+	// for {
+	// 	remainingJobs := len(r.jobs)
+	// 	if remainingJobs == 0 {
+	// 		break
+	// 	}
+	// 	//fmt.Printf("jobs remaining in the queue %d, waiting for workers to finish\n", remainingJobs)
+	// 	time.Sleep(10 * time.Millisecond) // Polling interval
+	// }
 
 	// Wait for all workers to finish processing
 	done := make(chan struct{})

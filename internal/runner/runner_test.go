@@ -3,6 +3,9 @@ package runner
 import (
 	"context"
 	"fmt"
+
+	// "strconv"
+
 	"log"
 	"runtime"
 	"sync"
@@ -743,7 +746,7 @@ func TestRunnerHighConcurrency(t *testing.T) {
 	r.Run(ctx)
 
 	// Add a large number of jobs
-	numJobs := 10000
+	numJobs := 200000
 	jobs := make([]*Job[Result], numJobs)
 	for i := 0; i < numJobs; i++ {
 		job, _ := NewJob(func(ctx context.Context, args ...any) (Result, error) {
@@ -751,6 +754,7 @@ func TestRunnerHighConcurrency(t *testing.T) {
 			return Result{ID: i, Message: "Job completed"}, nil
 		})
 		jobs[i] = job
+		t.Logf("Adding job: %v", job.GetID())
 		r.AddJob(job)
 	}
 
@@ -758,10 +762,10 @@ func TestRunnerHighConcurrency(t *testing.T) {
 	r.ShutdownGracefully(cancel)
 
 	// Verify all jobs completed
-	for i, job := range jobs {
+	for _, job := range jobs {
 		if job.GetStatus() != StatusCompleted {
-			t.Log(job.String())
-			t.Errorf("Job %d did not complete successfully", i)
+			// t.Log(job.String())
+			t.Errorf("Job %d did not complete successfully", job.GetID())
 		}
 	}
 }
