@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 type Processable[T any] interface {
@@ -17,7 +15,7 @@ type Processable[T any] interface {
 	GetDuration() time.Duration                      // Returns execution time
 	CreatedAt() time.Time                            // Returns the time the job was created
 	CompletedAt() time.Time                          // Returns the time the job was completed
-	GetID() uuid.UUID                                // Returns the unique identifier of the job
+	GetID() ID                                       // Returns the unique identifier of the job
 }
 
 // make sure Job implements Processable interface
@@ -111,32 +109,22 @@ func (j *Job[T]) GetDuration() time.Duration {
 // CreatedAt returns the time the job was created
 // default time if nil
 func (j *Job[T]) CreatedAt() time.Time {
-	if j.jobBase.getCreatedAt() == nil {
-		return time.Time{}
-	}
-	return *j.jobBase.getCreatedAt()
+	return j.jobBase.getCreatedAt()
 }
 
 // StartedAt returns the time the job was started
 // default time if nil
 func (j *Job[T]) StartedAt() time.Time {
-	// If the job has not started yet, set default time
-	if j.jobBase.getStartedAt() == nil {
-		return time.Time{}
-	}
-	return *j.jobBase.getStartedAt()
+	return j.jobBase.getStartedAt()
 }
 
 // CompletedAt returns the time the job was completed
 // default time if nil
 func (j *Job[T]) CompletedAt() time.Time {
-	if j.jobBase.getCompletedAt() == nil {
-		return time.Time{}
-	}
-	return *j.jobBase.getCompletedAt()
+	return j.jobBase.getCompletedAt()
 }
 
-func (j *Job[T]) GetID() uuid.UUID {
+func (j *Job[T]) GetID() ID {
 	return j.jobBase.getID()
 }
 

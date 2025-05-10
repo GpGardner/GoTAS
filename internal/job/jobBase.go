@@ -1,7 +1,6 @@
 package job
 
 import (
-	"GOTAS/internal/utils"
 	"encoding/json"
 	"sync"
 	"time"
@@ -35,13 +34,17 @@ import (
 //     timerPool.Put(t)
 // }
 
+type ID interface {
+	String() string
+}
+
 type jobBase struct {
 	mu          sync.Mutex    // Mutex to protect concurrent access
-	id          uuid.UUID     // Unique identifier of the job
+	id          ID            // Unique identifier of the job
 	status      Status        // Status of the job
-	createdAt   *time.Time    // Time the job was created
-	startedAt   *time.Time    // Time the job execution started
-	completedAt *time.Time    // Time the job was completed
+	createdAt   time.Time     // Time the job was created
+	startedAt   time.Time     // Time the job execution started
+	completedAt time.Time     // Time the job was completed
 	duration    time.Duration // Duration of the job execution
 	error       error         // Error message of the job (converted to string for serialization)
 }
@@ -59,9 +62,9 @@ func (j *jobBase) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		ID          string        `json:"id" bson:"_id"`
 		Status      Status        `json:"status" bson:"status"`
-		CreatedAt   *time.Time    `json:"created_at" bson:"created_at"`
-		StartedAt   *time.Time    `json:"started_at" bson:"started_at"`
-		CompletedAt *time.Time    `json:"completed_at" bson:"completed_at"`
+		CreatedAt   time.Time     `json:"created_at" bson:"created_at"`
+		StartedAt   time.Time     `json:"started_at" bson:"started_at"`
+		CompletedAt time.Time     `json:"completed_at" bson:"completed_at"`
 		Duration    time.Duration `json:"duration" bson:"duration"`
 		Error       string        `json:"error" bson:"error"`
 	}{
@@ -103,9 +106,9 @@ func generateID() (uuid.UUID, error) {
 	return uuid.NewUUID()
 }
 
-func generateCreatedAt() (*time.Time, error) {
+func generateCreatedAt() (time.Time, error) {
 	t := time.Now()
-	return &t, nil
+	return t, nil
 }
 
 // start marks the job as started and sets the started time
@@ -118,12 +121,12 @@ func (j *jobBase) start() {
 func (j *jobBase) setStartedAt(t time.Time) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	j.startedAt = utils.Ptr(t)
+	j.startedAt = t
 }
 
 // ID returns the unique identifier of the job'
 // ID cannot be nil, if it is nil, generate a new one
-func (j *jobBase) getID() uuid.UUID {
+func (j *jobBase) getID() ID {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.id == uuid.Nil {
@@ -151,14 +154,14 @@ func (j *jobBase) setStatus(s Status) {
 }
 
 // CreatedAt returns the time the job was created or nil if not set
-func (j *jobBase) getCreatedAt() *time.Time {
+func (j *jobBase) getCreatedAt() time.Time {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return j.createdAt
 }
 
 // CompletedAt returns the time the job was completed or nil if not set
-func (j *jobBase) getCompletedAt() *time.Time {
+func (j *jobBase) getCompletedAt() time.Time {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return j.completedAt
@@ -167,10 +170,10 @@ func (j *jobBase) getCompletedAt() *time.Time {
 func (j *jobBase) complete() {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	j.completedAt = utils.Ptr(time.Now())
+	j.completedAt = time.Now()
 }
 
-func (j *jobBase) getStartedAt() *time.Time {
+func (j *jobBase) getStartedAt() time.Time {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return j.startedAt
@@ -186,10 +189,11 @@ func (j *jobBase) calculateDuration() {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	if j.startedAt != nil {
-		j.duration = time.Since(*j.startedAt)
+	if !j.startedAt.IsZero() {
+		d := time.Since(j.startedAt)
+		j.duration = d
 	} else {
-		j.duration = 0
+		j.duration = time.Duration(0)
 	}
 }
 

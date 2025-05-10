@@ -3,8 +3,6 @@ package job
 import (
 	"context"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 // PriorityJob is a wrapper around a Processable job that adds priority functionality.
@@ -135,7 +133,7 @@ func (p *PriorityJob[T]) GetPriority() uint8 {
 	return p.priority
 }
 
-func (p *PriorityJob[T]) GetID() uuid.UUID {
+func (p *PriorityJob[T]) GetID() ID {
 	return p.job.GetID()
 }
 
