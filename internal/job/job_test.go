@@ -3,71 +3,56 @@ package job
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
-
-	"github.com/google/uuid"
 )
 
-func TestNewJobBase(t *testing.T) {
-	jb, err := NewJobBase()
-	if err != nil {
-		t.Errorf("expected no error, got %v", err)
-	}
+var timerPool = sync.Pool{
+	New: func() interface{} {
+		return time.NewTimer(0)
+	},
+}
 
-	if jb.getID() == uuid.Nil {
-		t.Errorf("expected a valid UUID, got nil")
+func getTimer(d time.Duration) *time.Timer {
+	t := timerPool.Get().(*time.Timer)
+	if !t.Stop() {
+		<-t.C // Drain the channel if it has a value
 	}
+	t.Reset(d)
+	return t
+}
 
-	if jb.getStatus() != StatusPending {
-		t.Errorf("expected status to be StatusPending, got %v", jb.getStatus())
+func putTimer(t *time.Timer) {
+	if !t.Stop() {
+		<-t.C // Drain the channel if it has a value
 	}
-
-	if jb.getCreatedAt().IsZero() {
-		t.Errorf("expected createdAt to be set, got zero value")
-	}
+	timerPool.Put(t)
 }
 
 func TestJobWithError_Run_Success(t *testing.T) {
-
-	jb, err := NewJobBase()
-	if err != nil {
-		t.Errorf("expected no error, got %v", err)
-	}
 	j := &Job[any]{ // Using Job[any] to match the signature of the function
-		jobBase: jb,
 		function: func(ctx context.Context, args ...any) (any, error) {
 			return nil, nil
 		},
 	}
 
 	ctx := context.Background()
-	_, err = j.Run(ctx)
+	_, err := j.Run(ctx)
 
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
 
-	if j.GetStatus() != StatusCompleted {
-		t.Errorf("expected status to be StatusCompleted, got %v", j.GetStatus())
-	}
-
-	if j.CompletedAt().IsZero() {
-		t.Errorf("expected completedAt to be set, got zero value")
-	}
 }
 
 func TestJobWithError_Run_Error(t *testing.T) {
-	jb, err := NewJobBase()
+	expectedErr := ErrJobFailure
+	j, err := Create(func(ctx context.Context, args ...any) (any, error) {
+		return nil, expectedErr
+	})
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
-	}
-	expectedErr := ErrJobFailure
-	j := &Job[any]{
-		jobBase: jb,
-		function: func(ctx context.Context, args ...any) (any, error) {
-			return nil, expectedErr
-		},
 	}
 
 	ctx := context.Background()
@@ -76,23 +61,16 @@ func TestJobWithError_Run_Error(t *testing.T) {
 	if err != expectedErr {
 		t.Errorf("expected error %v, got %v", expectedErr, err)
 	}
-
-	if j.GetStatus() != StatusError {
-		t.Errorf("expected status to be StatusError, got %v", j.GetStatus())
-	}
 }
-
 func TestJobWithError_Run_Timeout(t *testing.T) {
-	jb, err := NewJobBase()
+	j, err := Create(func(ctx context.Context, args ...any) (any, error) {
+		timer := getTimer(2 * time.Second)
+		defer putTimer(timer)
+		<-timer.C
+		return nil, nil
+	})
 	if err != nil {
-		t.Errorf("expected no error, got %v", err)
-	}
-	j := &Job[any]{
-		jobBase: jb,
-		function: func(ctx context.Context, args ...any) (any, error) {
-			time.Sleep(2 * time.Second)
-			return nil, nil
-		},
+		t.Error(err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
@@ -103,24 +81,15 @@ func TestJobWithError_Run_Timeout(t *testing.T) {
 	if err != context.DeadlineExceeded {
 		t.Errorf("expected error %v, got %v", context.DeadlineExceeded, err)
 	}
-
-	if j.GetStatus() != StatusTimeout {
-		t.Errorf("expected status to be StatusTimeout, got %v", j.GetStatus())
-	}
 }
 
 func TestJobWithResult_Run_Success(t *testing.T) {
-	jb, err := NewJobBase()
-	if err != nil {
-		t.Errorf("expected no error, got %v", err)
-	}
-
 	expectedResult := "success"
-	j := &Job[string]{
-		jobBase: jb,
-		function: func(ctx context.Context, args ...any) (string, error) {
-			return expectedResult, nil
-		},
+	j, err := Create(func(ctx context.Context, args ...any) (string, error) {
+		return expectedResult, nil
+	})
+	if err != nil {
+		t.Error(err)
 	}
 
 	ctx := context.Background()
@@ -133,24 +102,15 @@ func TestJobWithResult_Run_Success(t *testing.T) {
 	if result != expectedResult {
 		t.Errorf("expected result %v, got %v", expectedResult, result)
 	}
-
-	if j.GetStatus() != StatusCompleted {
-		t.Errorf("expected status to be StatusCompleted, got %v", j.GetStatus())
-	}
 }
 
 func TestJobWithResult_Run_Error(t *testing.T) {
-	jb, err := NewJobBase()
-	if err != nil {
-		t.Errorf("expected no error, got %v", err)
-	}
-
 	expectedErr := errors.New("job failed")
-	j := &Job[string]{
-		jobBase: jb,
-		function: func(ctx context.Context, args ...any) (string, error) {
-			return "", expectedErr
-		},
+	j, err := Create(func(ctx context.Context, args ...any) (string, error) {
+		return "", expectedErr
+	})
+	if err != nil {
+		t.Error(err)
 	}
 
 	ctx := context.Background()
@@ -163,27 +123,21 @@ func TestJobWithResult_Run_Error(t *testing.T) {
 	if result != "" {
 		t.Errorf("expected result to be empty, got %v", result)
 	}
-
-	if j.GetStatus() != StatusError {
-		t.Errorf("expected status to be StatusError, got %v", j.GetStatus())
-	}
 }
 
 func TestJobWithResult_Run_Timeout(t *testing.T) {
-	jb, err := NewJobBase()
+	j, err := Create(func(ctx context.Context, args ...any) (string, error) {
+		time.Sleep(2 * time.Second)
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return "timeout", nil
+	})
 	if err != nil {
-		t.Errorf("expected no error, got %v", err)
+		t.Error(err)
 	}
 
-	j := &Job[string]{
-		jobBase: jb,
-		function: func(ctx context.Context, args ...any) (string, error) {
-			time.Sleep(2 * time.Second)
-			return "timeout", nil
-		},
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
 	result, err := j.Run(ctx)
@@ -194,9 +148,5 @@ func TestJobWithResult_Run_Timeout(t *testing.T) {
 
 	if result != "" {
 		t.Errorf("expected result to be empty, got %v", result)
-	}
-
-	if j.GetStatus() != StatusTimeout {
-		t.Errorf("expected status to be StatusTimeout, got %v", j.GetStatus())
 	}
 }

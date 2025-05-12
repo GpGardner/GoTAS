@@ -8,10 +8,11 @@ package job
 // The priority queue is designed to be used with Go's container/heap package.
 //
 // Example Usage:
-//   pq := &PriorityQueue[Result]{}
-//   heap.Init(pq)
-//   heap.Push(pq, PriorityJob[Result]{job: job1, priority: 10})
-//   highestPriorityJob := heap.Pop(pq).(PriorityJob[Result])
+//
+//	pq := &PriorityQueue[Result]{}
+//	heap.Init(pq)
+//	heap.Push(pq, PriorityJob[Result]{job: job1, priority: 10})
+//	highestPriorityJob := heap.Pop(pq).(PriorityJob[Result])
 type PriorityQueue[T any] []PriorityJob[T]
 
 // Len returns the number of jobs in the priority queue.
@@ -32,7 +33,7 @@ func (pq PriorityQueue[T]) Len() int { return len(pq) }
 // - true if the job at index i has a higher priority than the job at index j.
 // - false otherwise.
 func (pq PriorityQueue[T]) Less(i, j int) bool {
-    return pq[i].GetPriority() > pq[j].GetPriority() // Higher priority first
+	return pq[i].GetPriority() > pq[j].GetPriority() // Higher priority first
 }
 
 // Swap swaps the positions of two jobs in the priority queue.
@@ -42,7 +43,7 @@ func (pq PriorityQueue[T]) Less(i, j int) bool {
 // - i: The index of the first job to swap.
 // - j: The index of the second job to swap.
 func (pq PriorityQueue[T]) Swap(i, j int) {
-    pq[i], pq[j] = pq[j], pq[i]
+	pq[i], pq[j] = pq[j], pq[i]
 }
 
 // Push adds a new job to the priority queue.
@@ -50,9 +51,9 @@ func (pq PriorityQueue[T]) Swap(i, j int) {
 //
 // Parameters:
 // - x: The job to add to the priority queue. Must be of type PriorityJob[T].
-func (pq *PriorityQueue[T]) Push(x any) {
-    job := x.(PriorityJob[T]) 
-    *pq = append(*pq, job)
+func (pq *PriorityQueue[T]) Push(x *PriorityJob[T]) {
+	job := x
+	*pq = append(*pq, *job)
 }
 
 // Pop removes and returns the job with the highest priority from the priority queue.
@@ -60,10 +61,10 @@ func (pq *PriorityQueue[T]) Push(x any) {
 //
 // Returns:
 // - The job with the highest priority, of type PriorityJob[T].
-func (pq *PriorityQueue[T]) Pop() any {
-    old := *pq
-    n := len(old)
-    item := old[n-1] // Get the last item (highest priority due to heap ordering)
-    *pq = old[0 : n-1]
-    return item
+func (pq *PriorityQueue[T]) Pop() *PriorityJob[T] {
+	old := *pq
+	n := len(old)
+	item := old[n-1] // Get the last item (highest priority due to heap ordering)
+	*pq = old[0 : n-1]
+	return &item
 }

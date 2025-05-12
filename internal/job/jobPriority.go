@@ -2,7 +2,6 @@ package job
 
 import (
 	"context"
-	"time"
 )
 
 // PriorityJob is a wrapper around a Processable job that adds priority functionality.
@@ -67,61 +66,7 @@ func (p *PriorityJob[T]) Run(ctx context.Context, args ...any) (T, error) {
 // Parameters:
 // - status: The completion status of the job.
 func (p *PriorityJob[T]) Complete(status Status) {
-	p.job.Complete(status)
-}
-
-// GetStatus retrieves the current status of the wrapped job.
-// This method forwards the call to the wrapped job.
-//
-// Returns:
-// - The current status of the job.
-func (p *PriorityJob[T]) GetStatus() Status {
-	return p.job.GetStatus()
-}
-
-// GetError retrieves the error (if any) from the wrapped job.
-// This method forwards the call to the wrapped job.
-//
-// Returns:
-// - The error encountered during job execution, or nil if no error occurred.
-func (p *PriorityJob[T]) GetError() error {
-	return p.job.GetError()
-}
-
-// GetResult retrieves the result of the wrapped job.
-// This method forwards the call to the wrapped job.
-//
-// Returns:
-// - The result of the job execution.
-func (p *PriorityJob[T]) GetResult() T {
-	return p.job.GetResult()
-}
-
-// GetDuration retrieves the duration of the wrapped job's execution.
-// This method forwards the call to the wrapped job.
-//
-// Returns:
-// - The duration of the job's execution.
-func (p *PriorityJob[T]) GetDuration() time.Duration {
-	return p.job.GetDuration()
-}
-
-// CreatedAt retrieves the creation time of the wrapped job.
-// This method forwards the call to the wrapped job.
-//
-// Returns:
-// - The time when the job was created.
-func (p *PriorityJob[T]) CreatedAt() time.Time {
-	return p.job.CreatedAt()
-}
-
-// CompletedAt retrieves the completion time of the wrapped job.
-// This method forwards the call to the wrapped job.
-//
-// Returns:
-// - The time when the job was completed.
-func (p *PriorityJob[T]) CompletedAt() time.Time {
-	return p.job.CompletedAt()
+	return
 }
 
 // GetPriority retrieves the priority level of the PriorityJob. Used for sorting or prioritizing jobs in a queue.
@@ -133,10 +78,6 @@ func (p *PriorityJob[T]) GetPriority() uint8 {
 	return p.priority
 }
 
-func (p *PriorityJob[T]) GetID() ID {
-	return p.job.GetID()
-}
-
 func (j *Job[T]) WithPriority(i uint8) *PriorityJob[T] {
 	// This method allows a Processable to be wrapped in a PriorityJob
 	if j == nil {
@@ -144,4 +85,20 @@ func (j *Job[T]) WithPriority(i uint8) *PriorityJob[T] {
 	}
 	job, _ := NewPriorityJob(j, i)
 	return job
+}
+
+// setResult sets the result of the job to the provided value.
+// This method is used when the job completes successfully.
+// It ensures that the result is stored in the job's state, allowing it to be retrieved later.
+// This wraps the setResult method of the wrapped job.
+func (j *PriorityJob[T]) setResult(result T) {
+	j.job.setResult(result)
+}
+
+// setResultEmpty sets the result of the job to its zero value.
+// This method is used when the job fails or encounters an error.
+// It ensures that the result is reset to a known state, preventing any stale data from being returned.
+// This wraps the setResultEmpty method of the wrapped job.
+func (j *PriorityJob[T]) setResultEmpty() {
+	j.job.setResultEmpty()
 }

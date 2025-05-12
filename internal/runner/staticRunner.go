@@ -6,44 +6,70 @@ import (
 	"sync"
 
 	. "GOTAS/internal/job"
+	logger "GOTAS/internal/log"
 )
 
 var _ Runnable[any] = (*static[any])(nil) // Ensure runner implements Runnable
 
 // static represents the job static that executes jobs based on a strategy.
 type static[T any] struct {
-	strategy StaticStrategy        // strategy is the execution strategy for the runner
-	jobs     []Processable[T]      // jobs is the list of jobs to be executed
-	wg       *sync.WaitGroup       // wg is the wait group for tracking job completion
-	mu       *sync.Mutex           // mu is the mutex for updating job status
-	callback func(*Processable[T]) // callback function to be invoked after each job execution, can be nil
+	log      logger.Logger    // log is the logger for the runner
+	strategy StaticStrategy   // strategy is the execution strategy for the runner
+	jobs     []Processable[T] // jobs is the list of jobs to be executed
+	wg       *sync.WaitGroup  // wg is the wait group for tracking job completion
+	mu       *sync.Mutex      // mu is the mutex for updating job status
+	callback func(*T, *error) // callback function to be invoked after each job execution, can be nil
 
 	completedJobs int // completedJobs is the number of jobs completed. complete happens regardless of error
 	totalJobs     int // totalJobs is the total number of jobs in the runner
 }
 
-// NewStaticRunner creates a new job runner with the specified execution strategy and an optional callback function.
-//
-// Parameters:
-//
-// - strategy: The execution strategy for the runner (e.g., StrategySequential, StrategyParallel, etc.).
-//
-// - callback: An optional function to be invoked after each job completes. Can be nil.
-//
-// Returns:
-// - A pointer to the newly created runner instance.
-//
-// Example:
-//
-//	runner := NewStaticRunner(StrategyParallel, func(job *Processable[any]) {
-//	    fmt.Printf("Job completed with status: %v\n", job.GetStatus())
-//	})
-func NewStaticRunner[T any](strategy StaticStrategy, callback func(*Processable[T])) *static[T] {
+// StaticBuilder is a builder for creating a static runner.
+// It allows setting the logger, strategy, and callback function.
+// The builder pattern is used to create a static runner instance with optional configurations.
+// Example usage:
+// builder := NewStaticBuilder[Result](). WithLogger(logger).WithStrategy(strategy).WithCallback(callback)
+// runner :=
+type StaticBuilder[T any] struct {
+	log      logger.Logger    // log is the logger for the runner
+	strategy StaticStrategy   // strategy is the execution strategy for the runner
+	callback func(*T, *error) // callback function to be invoked after each job execution, can be nil
+}
+
+func NewStaticBuilder[T any]() *StaticBuilder[T] {
+	return &StaticBuilder[T]{
+		log:      logger.NewNoOpLogger(),
+		strategy: StrategySequential{},
+		callback: nil,
+	}
+}
+
+func (b *StaticBuilder[T]) WithLogger(l logger.Logger) *StaticBuilder[T] {
+	b.log = l
+	return b
+}
+
+func (b *StaticBuilder[T]) WithStrategy(s StaticStrategy) *StaticBuilder[T] {
+	b.strategy = s
+	return b
+}
+
+func (b *StaticBuilder[T]) WithCallback(c func(*T, *error)) *StaticBuilder[T] {
+	b.callback = c
+	return b
+}
+
+func (b *StaticBuilder[T]) Build() *static[T] {
+
+	j := make([]Processable[T], 0)
+
 	return &static[T]{
-		strategy:      strategy,
-		jobs:          make([]Processable[T], 0),
+		log:           b.log,
+		strategy:      b.strategy,
+		jobs:          j,
 		wg:            &sync.WaitGroup{},
 		mu:            &sync.Mutex{},
+		callback:      b.callback,
 		completedJobs: 0,
 		totalJobs:     0,
 	}
@@ -59,6 +85,10 @@ func NewStaticRunner[T any](strategy StaticStrategy, callback func(*Processable[
 //	job := &Job[Result]{ID: 1}
 //	runner.AddJob(job)
 func (r *static[T]) AddJob(j Processable[T]) error {
+	if j == nil {
+		return ErrInvalidJobStatus // or return an error based on your requirements
+	}
+	r.log.Debug("Adding job to runner")
 	r.mu.Lock()
 	r.jobs = append(r.jobs, j)
 	r.mu.Unlock()
@@ -127,10 +157,10 @@ func (r *static[T]) runSequential(ctx context.Context) {
 		return
 	}
 	for _, j := range r.jobs {
-		j.Run(ctx)
+		res, err := j.Run(ctx)
 		r.incrementCompletedJobs()
 		if r.callback != nil {
-			r.callback(&j) // Invoke the callback
+			r.callback(&res, &err) // Invoke the callback
 		}
 	}
 }
@@ -154,9 +184,9 @@ func (r *static[T]) runParallel(ctx context.Context) {
 		go func(j Processable[T]) {
 			defer r.wg.Done() // Ensure WaitGroup counter is decremented even if the job panics
 			defer r.incrementCompletedJobs()
-			j.Run(ctx)
+			res, err := j.Run(ctx)
 			if r.callback != nil {
-				r.callback(&j)
+				r.callback(&res, &err) // Invoke the callback
 			}
 		}(j)
 	}
@@ -181,19 +211,18 @@ func (r *static[T]) runFailFast(ctx context.Context) {
 
 	for _, j := range r.jobs {
 		if !failed {
-			j.Run(ctx)
+			res, err := j.Run(ctx)
 			r.incrementCompletedJobs()
-			if j.GetStatus() == StatusError {
-				failed = true
+			if err != nil {
+				failed = true // Mark as failed if an error occurs
 			}
 			if r.callback != nil {
-				r.callback(&j) // Invoke the callback
+				r.callback(&res, &err) // Invoke the callback
 			}
 		} else {
-			// Mark the job as failed without running it
-			j.Complete(StatusFailed)
 			if r.callback != nil {
-				r.callback(&j) // Invoke the callback
+				e := ErrJobCancelled
+				r.callback(nil, &e.Err) // Invoke the callback
 			}
 		}
 	}
@@ -238,7 +267,7 @@ func (r *static[T]) runPriority(ctx context.Context) {
 		// Pop the highest priority job
 		job := pq.Pop()
 
-		job.(*PriorityJob[T]).Run(ctx) // Execute the job
+		job.Run(ctx) // Execute the job
 		r.incrementCompletedJobs()
 	}
 
@@ -249,6 +278,7 @@ func (r *static[T]) runPriority(ctx context.Context) {
 // Notes:
 // - This method uses a mutex to ensure safe access to the completedJobs counter.
 func (r *static[T]) incrementCompletedJobs() {
+	r.log.Debug("Incrementing completed jobs")
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.completedJobs++
@@ -259,6 +289,7 @@ func (r *static[T]) incrementCompletedJobs() {
 // Notes:
 // - This method uses a mutex to ensure safe access to the totalJobs counter.
 func (r *static[T]) incrementTotalJobs() {
+	r.log.Debug("Incrementing total jobs")
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.totalJobs++

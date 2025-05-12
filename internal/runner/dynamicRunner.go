@@ -24,10 +24,30 @@ const (
 	DefaultMaxWaitForClose = 10 * time.Second
 )
 
+// dynamic represents a runner that executes jobs based on a strategy and can continuously run
+type dynamic[T any] struct {
+	log      logger.Logger   // log is the logger for the runner
+	strategy DynamicStrategy // strategy is the execution strategy for the runner
+
+	workers         int           //total amount of workers to run
+	chanSize        int           // chanSize is the size of the buffered channel for jobs default to 100 max 10000
+	maxRetries      int           // maxRetries is the maximum number of retries for failed jobs
+	backoff         time.Duration // backoff is the backoff duration for retrying failed jobs
+	maxWaitForClose time.Duration // maxWaitForClose is the maximum wait time for the runner to close gracefully
+
+	closeOnce sync.Once           // Ensures the channel is closed only once
+	jobs      chan Processable[T] // jobs is the list of jobs to be executed
+	wg        *sync.WaitGroup     // wg is the wait group for tracking job completion
+	callback  func(*T, *error)    // callback function to be invoked after each job execution, can be nil
+
+	completedJobs int32 // completedJobs is the number of jobs completed. complete happens regardless of error
+	totalJobs     int32 // totalJobs is the total number of jobs in the runner
+}
+
 type RunnerBuilder[T any] struct {
 	logger          logger.Logger
 	strategy        DynamicStrategy
-	callback        func(Processable[T])
+	callback        func(*T, *error)
 	workers         int
 	chanSize        int
 	backoff         time.Duration
@@ -49,7 +69,7 @@ type RunnerBuilder[T any] struct {
 // - WithStrategy, WithCallback, WithWorkers, WithChanSize, WithBackoff, WithMaxRetries, and WithMaxWaitForClose methods are available for configuration.
 func NewRunnerBuilder[T any]() *RunnerBuilder[T] {
 	return &RunnerBuilder[T]{
-		logger:          &logger.NoOpLogger{},
+		logger:          logger.NewNoOpLogger(),
 		workers:         DefaultMaxWorkers,
 		chanSize:        DefaultChanSize,
 		backoff:         DefaultBackoff,
@@ -81,7 +101,7 @@ func (b *RunnerBuilder[T]) WithStrategy(strategy DynamicStrategy) *RunnerBuilder
 // - callback: The callback function to be invoked after each job execution.
 // Returns:
 // - *RunnerBuilder[T]: A pointer to the RunnerBuilder instance with the updated callback.
-func (b *RunnerBuilder[T]) WithCallback(callback func(Processable[T])) *RunnerBuilder[T] {
+func (b *RunnerBuilder[T]) WithCallback(callback func(*T, *error)) *RunnerBuilder[T] {
 	b.callback = callback
 	return b
 }
@@ -183,50 +203,6 @@ func (b *RunnerBuilder[T]) Build() *dynamic[T] {
 		totalJobs:       0,
 	}
 }
-
-// dynamic represents a runner that executes jobs based on a strategy and can continuously run
-type dynamic[T any] struct {
-	log      logger.Logger   // log is the logger for the runner
-	strategy DynamicStrategy // strategy is the execution strategy for the runner
-
-	workers         int           //total amount of workers to run
-	chanSize        int           // chanSize is the size of the buffered channel for jobs default to 100 max 10000
-	maxRetries      int           // maxRetries is the maximum number of retries for failed jobs
-	backoff         time.Duration // backoff is the backoff duration for retrying failed jobs
-	maxWaitForClose time.Duration // maxWaitForClose is the maximum wait time for the runner to close gracefully
-
-	closeOnce sync.Once            // Ensures the channel is closed only once
-	jobs      chan Processable[T]  // jobs is the list of jobs to be executed
-	wg        *sync.WaitGroup      // wg is the wait group for tracking job completion
-	callback  func(Processable[T]) // callback function to be invoked after each job execution, can be nil
-
-	completedJobs int32 // completedJobs is the number of jobs completed. complete happens regardless of error
-	totalJobs     int32 // totalJobs is the total number of jobs in the runner
-}
-
-// NewDynamicRunner creates a new job runner with the specified execution strategy and an optional callback function.
-// func NewDynamicRunner[T any](strategy DynamicStrategy, callback func(Processable[T]), workers, chanSize int) *dynamic[T] {
-// 	//default workers 8
-// 	workers = clampWorkers(workers)
-
-// 	// default channel size if not provided
-// 	chanSize = clampChan(chanSize)
-
-// 	return &dynamic[T]{
-// 		log:             &logger.NoOpLogger{},
-// 		strategy:        strategy,
-// 		workers:         workers,                             // total amount of workers to run
-// 		chanSize:        chanSize,                            // size of the buffered channel for jobs
-// 		maxRetries:      DefaultMaxRetries,                   // maximum number of retries for failed jobs
-// 		backoff:         DefaultBackoff,                      // backoff duration for retrying failed jobs
-// 		maxWaitForClose: DefaultMaxWaitForClose,              // maximum wait time for the runner to close gracefully
-// 		jobs:            make(chan Processable[T], chanSize), // Buffered channel to hold jobs, can be adjusted based on requirements
-// 		wg:              &sync.WaitGroup{},
-// 		callback:        callback,
-// 		completedJobs:   0,
-// 		totalJobs:       0,
-// 	}
-// }
 
 func clampChan(chanSize int) int {
 	// Ensure the channel size is a positive integer, default to 100 if not provided or invalid
@@ -332,34 +308,40 @@ func (r *dynamic[T]) runParallel(ctx context.Context) {
 
 		go func(workerID int) {
 			defer r.wg.Done() // Ensure Done is called when the worker exits
+
+			timer := time.NewTimer(10 * time.Second)
+			defer timer.Stop()
+
 			for {
 				select {
 				case j, ok := <-r.jobs:
-					if j != nil {
-						// r.log.Debug("Worker %d working job %+v\n", workerID, j)
-					} else {
-						// r.log.Debug("Worker %d received nil job\n", workerID)
-					}
-
 					if !ok {
 						r.log.Debug("Worker %d shutting down\n", workerID)
 						return // Channel closed, stop worker
 					}
-					// r.log.Debug("Worker %d dequeued job: %v", workerID, j)
-
-					_, err := j.Run(ctx)
-					if r.callback != nil {
-						r.callback(j)
-					}
-					if err != nil {
-						// r.log.Debug("Worker %d encountered error: %v\n", workerID, err)
+					if j == nil {
+						r.log.Debug("Worker %d received nil job\n", workerID)
 						continue
 					}
 
+					r.log.Debug("Worker %d dequeued job: %v", workerID, j)
+
+					res, err := j.Run(ctx) // Ctx is handled by the job
+					if r.callback != nil {
+						r.callback(&res, &err) // Invoke the callback
+					}
+					if err != nil {
+						r.log.Debug("Worker %d encountered error: %v\n", workerID, err)
+					}
+
 					r.incrementCompletedJobs()
-				case <-time.After(10 * time.Second):
-					// r.log.Debug("Worker %d waiting for work\n", workerID)
-					continue // Worker is idle, continue waiting for jobs
+				case <-timer.C:
+					// Reset the timer for the next iteration
+					if !timer.Stop() {
+						<-timer.C // Drain the channel if it has a value
+						r.log.Debug("Drain channel?")
+					}
+					timer.Reset(10 * time.Second)
 				}
 			}
 		}(i)
@@ -377,38 +359,36 @@ func (r *dynamic[T]) runRetry(ctx context.Context) {
 		r.wg.Add(1)
 
 		go func(workerID int) {
-			for {
-				select {
-				case j, ok := <-r.jobs:
-					if !ok {
-						r.wg.Done()
-						return // Channel closed, stop worker
-					}
-					_, err := j.Run(ctx)
-					if err != nil {
-						retryCount := 0
-						for retryCount < r.maxRetries {
-							retryCtx, cancel := context.WithTimeout(ctx, time.Duration(r.backoff)*time.Second)
-							defer cancel()
-							_, err = j.Run(retryCtx)
-							if err == nil {
-								break // Job succeeded
-							}
-							retryCount++
-							r.backoff *= 2 // Exponential backoff
+			for j := range r.jobs {
+				_, err := j.Run(ctx)
+				if err != nil {
+					retryCount := 0
+					for retryCount < r.maxRetries {
+						retryCtx, cancel := context.WithTimeout(ctx, time.Duration(r.backoff)*time.Second)
+						defer cancel()
+						res, err := j.Run(retryCtx)
+						if r.callback != nil {
+							r.callback(&res, &err) // Invoke the callback
 						}
+						if err == nil {
+							break // Job succeeded
+						}
+						retryCount++
+						r.backoff *= 2 // Exponential backoff
 					}
-					if r.callback != nil {
-						r.callback(j)
-					}
-
-					r.incrementCompletedJobs()
 				}
+				if r.callback != nil {
+					r.callback(nil, &err) // Invoke the callback
+				}
+
+				r.incrementCompletedJobs()
 			}
+			r.wg.Done()
 		}(i)
 	}
 }
 
+/*
 // func (r *dynamic[T]) runPriority(ctx context.Context) {
 // 	pq := &PriorityQueue[T]{}
 
@@ -473,6 +453,7 @@ func (r *dynamic[T]) runRetry(ctx context.Context) {
 // 	}
 // 	}
 // }
+*/
 
 func (r *dynamic[T]) runFailFast(ctx context.Context) {
 	// Local atomic error state
@@ -483,40 +464,30 @@ func (r *dynamic[T]) runFailFast(ctx context.Context) {
 		r.wg.Add(1)
 
 		go func(workerID int) {
-			for {
-				select {
-				case j, ok := <-r.jobs:
-					if !ok {
-						r.wg.Done()
-						return // Channel closed, stop worker
+			for j := range r.jobs {
+				if atomic.LoadInt32(&errState) == 1 {
+					// If an error has occurred, cancel the job and run it with the done context
+					done, cancel := context.WithCancel(ctx)
+					cancel()
+					res, err := j.Run(done)
+					if r.callback != nil {
+						r.callback(&res, &err) // Invoke the callback
+					}
+				} else {
+					res, err := j.Run(ctx)
+					if r.callback != nil {
+						r.callback(&res, &err) // Invoke the callback
 					}
 
-					if atomic.LoadInt32(&errState) == 1 {
-						// If an error has occurred, cancel the job and run it with the done context
-						done, cancel := context.WithCancel(ctx)
-						cancel()
-						_, err := j.Run(done)
-						if err != nil {
-						}
-						if r.callback != nil {
-							r.callback(j)
-						}
-					} else {
-						_, err := j.Run(ctx)
-						if r.callback != nil {
-							r.callback(j)
-						}
-
-						if err != nil {
-							r.log.Debug("Worker %d encountered error on job: %v\n", workerID, err)
-							atomic.StoreInt32(&errState, 1)
-						}
+					if err != nil {
+						r.log.Debug("Worker %d encountered error on job: %v\n", workerID, err)
+						atomic.StoreInt32(&errState, 1)
 					}
-
-					r.incrementCompletedJobs()
-
 				}
+
+				r.incrementCompletedJobs()
 			}
+			r.wg.Done()
 		}(i)
 	}
 }
@@ -538,9 +509,9 @@ func (r *dynamic[T]) runSequential(ctx context.Context) {
 
 		go func(workerID int) {
 			for j := range r.jobs {
-				_, err := j.Run(ctx)
+				res, err := j.Run(ctx)
 				if r.callback != nil {
-					r.callback(j)
+					r.callback(&res, &err) // Invoke the callback
 				}
 				if err != nil {
 					r.log.Debug("Error encountered while running job: %v\n", err)
@@ -573,15 +544,9 @@ func (r *dynamic[T]) ShutdownGracefully(cancel context.CancelFunc) {
 		close(r.jobs) // Close the jobs channel to signal no more jobs will be added
 	})
 
-	// // Wait for the queue to be fully drained
-	// for {
-	// 	remainingJobs := len(r.jobs)
-	// 	if remainingJobs == 0 {
-	// 		break
-	// 	}
-	// 	r.lob.Debug("jobs remaining in the queue %d, waiting for workers to finish\n", remainingJobs)
-	// 	time.Sleep(10 * time.Millisecond) // Polling interval
-	// }
+	// Create a context with timeout for graceful shutdown
+	ctx, cancelTimeout := context.WithTimeout(context.Background(), r.maxWaitForClose)
+	defer cancelTimeout()
 
 	// Wait for all workers to finish processing
 	done := make(chan struct{})
@@ -590,14 +555,17 @@ func (r *dynamic[T]) ShutdownGracefully(cancel context.CancelFunc) {
 		close(done)
 	}()
 
-	// Wait for workers to finish or timeout
 	select {
 	case <-done:
 		r.log.Debug("All workers shut down gracefully")
-	case <-time.After(r.maxWaitForClose):
-		r.log.Debug("Graceful shutdown timed out")
+	case <-ctx.Done():
+		r.log.Debug("Graceful shutdown timed out, forcing immediate shutdown")
 		cancel() // Cancel the context to forcefully stop workers
 	}
+
+	// Ensure all workers are stopped
+	r.wg.Wait()
+	r.log.Debug("Shutdown complete")
 }
 
 func (r *dynamic[T]) ShutdownImmediately() {

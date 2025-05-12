@@ -2,20 +2,12 @@ package job
 
 import (
 	"context"
-	"fmt"
-	"time"
 )
 
 type Processable[T any] interface {
-	Run(ctx context.Context, args ...any) (T, error) // Executes the job and returns result or error
-	Complete(Status)                                 // Marks the job as completed
-	GetStatus() Status                               // Returns current job status
-	GetError() error                                 // Returns job error (if any)
-	GetResult() T                                    // Returns job result (if applicable)
-	GetDuration() time.Duration                      // Returns execution time
-	CreatedAt() time.Time                            // Returns the time the job was created
-	CompletedAt() time.Time                          // Returns the time the job was completed
-	GetID() ID                                       // Returns the unique identifier of the job
+	Run(ctx context.Context, args ...any) (T, error) // Executes the job
+	setResult(result T)                              // Sets the result of the job
+	setResultEmpty()                                 // Sets the result to its zero value
 }
 
 // make sure Job implements Processable interface
@@ -23,109 +15,55 @@ var _ Processable[any] = (*Job[any])(nil)
 
 // Job that returns a result and an error
 type Job[T any] struct {
-	*jobBase
 	function func(ctx context.Context, args ...any) (T, error)
 	result   T
 }
 
 func (j *Job[T]) Run(ctx context.Context, args ...any) (T, error) {
-	j.start()
 
 	//Check that ctx isnt already complete
 	if ctx.Err() != nil {
-		j.setError(ctx.Err())
 		j.setResultEmpty()
 		j.Complete(StatusTimeout)
-		return j.result, j.error
+		return j.result, ctx.Err()
 	}
 
 	result, err := j.function(ctx, args...)
-	if ctx.Err() != nil {
-		j.setError(ctx.Err())
-		j.setResultEmpty()
-		j.Complete(StatusTimeout)
-	} else if err != nil {
-		j.setError(err)
+
+	if err != nil {
 		j.setResultEmpty()
 		j.Complete(StatusError)
 	} else {
 		j.setResult(result)
 		j.Complete(StatusCompleted)
 	}
-	return j.result, j.error
+	return j.result, err
 }
 
-// NewJobWithResult creates a new JobWithResult instance.
-// It initializes the jobBase fields and sets the function that will be executed.
-//
+// Create initializes a new Job instance with the provided function.
+// This function takes a function as an argument and returns a new Job instance.
+// The function should accept a context and any number of arguments, and return a result of type T and an error.
 // Parameters:
-// f: The function to be executed by the job. It takes a context and a variadic list of arguments
-// and returns a result and an error.
-//
-// args: A variadic list of arguments to be passed to the job.
-//
+// - f: A function that takes a context and any number of arguments, and returns a result of type T and an error.
 // Returns:
-// A pointer to the JobWithResult instance and an error if the job creation fails.
-// If the job creation is successful, the error will be nil.
-func NewJob[T any](f func(ctx context.Context, args ...any) (T, error)) (*Job[T], error) {
-	j, err := NewJobBase()
-	if err != nil {
-		return nil, err
-	}
-
+// - A pointer to the newly created Job instance.
+// - An error if the provided function is nil.
+// Example usage:
+//
+//	job, err := Create(func(ctx context.Context, args ...any) (string, error) {
+//	    // Handle context cancellation or timeout
+//	    // Your job logic here
+//	    return "result", nil
+//	})
+func Create[T any](f func(ctx context.Context, args ...any) (T, error)) (*Job[T], error) {
 	return &Job[T]{
-		jobBase:  j,
 		function: f,
 	}, nil
 }
 
 // Complete marks the job as completed
 func (j *Job[T]) Complete(status Status) {
-	j.jobBase.completeJob(status)
-}
-
-// GetStatus returns the current job status
-func (j *Job[T]) GetStatus() Status {
-	return j.jobBase.getStatus()
-}
-
-// GetError returns the job error (if any)
-func (j *Job[T]) GetError() error {
-	return j.jobBase.getError()
-}
-
-// GetResult returns the job result (if applicable)
-func (j *Job[T]) GetResult() T {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	return j.result
-}
-
-// GetDuration returns the execution time
-func (j *Job[T]) GetDuration() time.Duration {
-	return j.jobBase.getDuration()
-}
-
-// CreatedAt returns the time the job was created
-// default time if nil
-func (j *Job[T]) CreatedAt() time.Time {
-	return j.jobBase.getCreatedAt()
-}
-
-// StartedAt returns the time the job was started
-// default time if nil
-func (j *Job[T]) StartedAt() time.Time {
-	return j.jobBase.getStartedAt()
-}
-
-// CompletedAt returns the time the job was completed
-// default time if nil
-func (j *Job[T]) CompletedAt() time.Time {
-	return j.jobBase.getCompletedAt()
-}
-
-func (j *Job[T]) GetID() ID {
-	return j.jobBase.getID()
+	return
 }
 
 // String returns a human-readable string representation of the Job instance.
@@ -133,14 +71,13 @@ func (j *Job[T]) GetID() ID {
 // This is useful for logging and debugging purposes.
 // If you need to obsfucate the result, then you can override this method in your own implementation.
 func (j *Job[T]) String() string {
-	return fmt.Sprintf(
-		"\nJob[ID=%d,\n Status=%s,\n CreatedAt=%s,\n Start=%s,\n CompletedAt=%s,\n Error=%v,\n Duration=%s\n]",
-		j.jobBase.getID(),
-		j.GetStatus(),
-		j.CreatedAt().Format(time.RFC3339),
-		j.StartedAt().Format(time.RFC3339),
-		j.CompletedAt().Format(time.RFC3339),
-		j.GetError(), // This will be nil if no error occurred
-		j.GetDuration(),
-	)
+  return "Job" // TODO: implement a better string representation
+}
+
+func (j *Job[T]) setResult(result T) {
+	j.result = result
+}
+
+func (j *Job[T]) setResultEmpty() {
+	j.result = *new(T) // Reset result to zero value
 }
